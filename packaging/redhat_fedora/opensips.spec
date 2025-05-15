@@ -37,7 +37,7 @@
 %global _with_wolfssl 1
 %endif
 
-%global EXCLUDE_MODULES %{!?_with_auth_jwt:auth_jwt} %{!?_with_cachedb_cassandra:cachedb_cassandra} %{!?_with_cachedb_couchbase:cachedb_couchbase} %{!?_with_cachedb_dynamodb:cachedb_dynamodb} %{!?_with_event_sqs:event_sqs} %{!?_with_cachedb_mongodb:cachedb_mongodb} %{!?_with_cachedb_redis:cachedb_redis} %{!?_with_db_oracle:db_oracle} %{!?_with_osp:osp} %{!?_with_sngtc:sngtc} %{!?_with_aaa_diameter:aaa_diameter aka_av_diameter} %{?_without_db_perlvdb:db_perlvdb} %{?_without_snmpstats:snmpstats} %{!?_with_wolfssl:tls_wolfssl} launch_darkly http2d
+%global EXCLUDE_MODULES %{!?_with_auth_jwt:auth_jwt} %{!?_with_cachedb_cassandra:cachedb_cassandra} %{!?_with_cachedb_couchbase:cachedb_couchbase} %{!?_with_cachedb_dynamodb:cachedb_dynamodb} %{!?_with_event_sqs:event_sqs} %{!?_with_cachedb_mongodb:cachedb_mongodb} %{!?_with_cachedb_redis:cachedb_redis} %{!?_with_db_oracle:db_oracle} %{!?_with_osp:osp} %{!?_with_sngtc:sngtc} %{!?_with_aaa_diameter:aaa_diameter aka_av_diameter} %{?_without_db_perlvdb:db_perlvdb} %{?_without_snmpstats:snmpstats} %{!?_with_wolfssl:tls_wolfssl} launch_darkly http2d rtp.io
 
 Summary:  Very fast and configurable SIP server
 Name:     opensips
@@ -1191,6 +1191,7 @@ fi
 %{_libdir}/opensips/modules/status_report.so
 %{_libdir}/opensips/modules/tracer.so
 %{_libdir}/opensips/modules/sl.so
+%{_libdir}/opensips/modules/sockets_mgm.so
 %{_libdir}/opensips/modules/speeddial.so
 %{_libdir}/opensips/modules/sql_cacher.so
 %{_libdir}/opensips/modules/sst.so
@@ -1289,6 +1290,7 @@ fi
 %doc docdir/README.status_report
 %doc docdir/README.tracer
 %doc docdir/README.sl
+%doc docdir/README.sockets_mgm
 %doc docdir/README.speeddial
 %doc docdir/README.sql_cacher
 %doc docdir/README.sst
@@ -1664,6 +1666,9 @@ fi
 
 
 %changelog
+* Tue May 13 2025 Razvan Crainea <razvan@opensips.org> - 3.6.0-1
+- New module: sockets_mgm
+
 * Tue Mar 11 2025 Razvan Crainea <razvan@opensips.org> - 3.6.0-1
 - New module: janus
 
