@@ -416,7 +416,7 @@ static int dm_avps2json(void *root, cJSON *avps)
 			__FD_CHECK_GT(fd_dict_search(fd_g_config->cnf_dict, DICT_AVP, AVP_BY_CODE_AND_VENDOR,
 					&ar, &obj, ENOENT), 0, skip);
 		} else {
-			__FD_CHECK_GT(fd_dict_search(fd_g_config->cnf_dict, DICT_AVP, AVP_BY_CODE,Add commentMore actions
+			__FD_CHECK_GT(fd_dict_search(fd_g_config->cnf_dict, DICT_AVP, AVP_BY_CODE,
 					&h->avp_code, &obj, ENOENT), 0, skip);
 		}
 		FD_CHECK_GT(fd_dict_getval(obj, &dm_avp));

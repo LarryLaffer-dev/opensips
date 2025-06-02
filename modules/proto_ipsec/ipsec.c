@@ -781,7 +781,7 @@ void ipsec_ctx_release(struct ipsec_ctx *ctx)
 
 	if (!ctx || ctx->ref <= 0) {
 		LM_ERR("ctx %p is NULL or has invalid ref %d\n", ctx, ctx?ctx->ref:0);
-		return;Add commentMore actions
+		return;
 	}
 
 	if (ctx->state != IPSEC_STATE_TMP && ctx->state != IPSEC_STATE_OK) {
@@ -793,7 +793,7 @@ void ipsec_ctx_release(struct ipsec_ctx *ctx)
 	free = ipsec_ctx_release_unsafe(ctx);
 	lock_release(&ctx->lock);
 	if (free) {
-		LM_DBG("IPSec ctx %p released\n", ctx);Add commentMore actions
+		LM_DBG("IPSec ctx %p released\n", ctx);
 		if (ctx->user) {
 			ipsec_ctx_release_user(ctx);
 			ctx->user = NULL; /* avoid double release */
