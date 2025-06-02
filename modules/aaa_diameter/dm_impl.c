@@ -53,6 +53,7 @@ struct fd_msg_list {
  * to consume them */
 struct list_head dm_unreplied_req;
 gen_lock_t dm_unreplied_req_lk;
+gen_lock_t dm_inbound_req_lk;
 unsigned int dm_unreplied_req_timeout = 120; /* sec */
 
 
@@ -412,11 +413,11 @@ static int dm_avps2json(void *root, cJSON *avps)
 			memset(&ar, 0, sizeof ar);
 			ar.avp_code = h->avp_code;
 			ar.avp_vendor = h->avp_vendor;
-			FD_CHECK_GT(fd_dict_search(fd_g_config->cnf_dict, DICT_AVP, AVP_BY_CODE_AND_VENDOR,
-					&ar, &obj, ENOENT));
+			__FD_CHECK_GT(fd_dict_search(fd_g_config->cnf_dict, DICT_AVP, AVP_BY_CODE_AND_VENDOR,
+					&ar, &obj, ENOENT), 0, skip);
 		} else {
-			FD_CHECK_GT(fd_dict_search(fd_g_config->cnf_dict, DICT_AVP, AVP_BY_CODE,
-					&h->avp_code, &obj, ENOENT));
+			__FD_CHECK_GT(fd_dict_search(fd_g_config->cnf_dict, DICT_AVP, AVP_BY_CODE,Add commentMore actions
+					&h->avp_code, &obj, ENOENT), 0, skip);
 		}
 		FD_CHECK_GT(fd_dict_getval(obj, &dm_avp));
 
@@ -513,7 +514,8 @@ static int dm_avps2json(void *root, cJSON *avps)
 add:
 		cJSON_AddItemToObject(item, dm_avp.avp_name, val);
 		cJSON_AddItemToArray(avps, item);
-
+skip:
+		/* continue to the next AVP */
 		FD_CHECK_GT(fd_msg_browse(it, MSG_BRW_NEXT, &it, NULL));
 		i++;
 	}
@@ -535,6 +537,8 @@ static int dm_receive_req(struct msg **_req, struct avp * avp, struct session * 
 	struct msg *req = *_req;
 	struct msg_hdr *hdr = NULL;
 	str tid = STR_NULL, avp_arr = STR_NULL;
+
+	lock_get(&dm_inbound_req_lk);
 
 	FD_CHECK(fd_msg_hdr(req, &hdr));
 	LM_DBG("received Diameter request (appl: %u, cmd: %u)\n", hdr->msg_appl, hdr->msg_code);
@@ -602,6 +606,8 @@ out:
 	cJSON_PurgeString(avp_arr.s);
 	cJSON_Delete(avps);
 	cJSON_InitHooks(NULL);
+
+	lock_release(&dm_inbound_req_lk);
 
 	*_req = NULL;
 	*act = DISP_ACT_CONT;
