@@ -83,6 +83,7 @@
 #define SIP_INSTANCE_COL   "sip_instance"
 #define KV_STORE_COL   "kv_store"
 #define ATTR_COL       "attr"
+#define PARAMS_COL       "params"
 
 static int mod_init(void);        /*!< Module initialization */
 static void destroy(void);        /*!< Module destroy */
@@ -133,6 +134,7 @@ str kv_store_col    = str_init(KV_STORE_COL);		/*!< Name of column containing ge
 str attr_col        = str_init(ATTR_COL);		/*!< Name of column containing additional info */
 str sip_instance_col = str_init(SIP_INSTANCE_COL);
 str contactid_col   = str_init(CONTACTID_COL);
+str params_col      = str_init(PARAMS_COL);
 
 str db_url          = STR_NULL;					/*!< Database URL */
 str cdb_url         = STR_NULL;					/*!< Cache Database URL */
@@ -176,6 +178,9 @@ static char *nat_bflag_str = 0;
  *       (although it gets published into a global NoSQL cluster)
  */
 int location_cluster;
+
+int ul_ha_cluster;
+str ul_ha_shtag;
 
 db_con_t* ul_dbh = 0; /* Database connection handle */
 db_func_t ul_dbf;
@@ -251,18 +256,23 @@ static const param_export_t params[] = {
 	{"methods_column",     STR_PARAM, &methods_col.s     },
 	{"sip_instance_column",STR_PARAM, &sip_instance_col.s},
 	{"kv_store_column",    STR_PARAM, &kv_store_col.s    },
+	{"params_column",      STR_PARAM, &params_col.s      },	
 	{"mi_dump_kv_store",   INT_PARAM, &mi_dump_kv_store  },
 	{"latency_event_min_us",   INT_PARAM, &latency_event_min_us  },
 	{"latency_event_min_us_delta",   INT_PARAM, &latency_event_min_us_delta  },
 	{"attr_column",        STR_PARAM, &attr_col.s        },
+	{"params_column",      STR_PARAM, &params_col.s      },	
 	{"matching_mode",      INT_PARAM, &matching_mode     },
 	{"cseq_delay",         INT_PARAM, &cseq_delay        },
 	{"hash_size",          INT_PARAM, &ul_hash_size      },
 	{"nat_bflag",          STR_PARAM, &nat_bflag_str     },
 	{"contact_refresh_timer",  INT_PARAM, &ct_refresh_timer },
 
+
 	/* data replication through clusterer using TCP binary packets */
 	{ "location_cluster",	INT_PARAM, &location_cluster   },
+	{ "ha_cluster",	        INT_PARAM, &ul_ha_cluster },
+	{ "ha_shtag",	        STR_PARAM, &ul_ha_shtag.s },
 	{ "skip_replicated_db_ops", INT_PARAM, &skip_replicated_db_ops   },
 	{ "max_contact_delete", INT_PARAM, &max_contact_delete },
 	{ "regen_broken_contactid", INT_PARAM, &cid_regen},
@@ -729,6 +739,14 @@ int ul_check_config(void)
 			return -1;
 		}
 
+		if (!ul_ha_cluster)
+			LM_ERR("'ha_cluster' is not set! "
+			        "Backup node will also write to CacheDB!\n");
+
+		if (!ul_ha_shtag.s)
+			LM_ERR("'ha_shtag' is not set! "
+			        "Backup node will also write to CacheDB!\n");
+
 		if (!cdb_url.s) {
 			LM_ERR("no cache database URL defined! ('cachedb_url')\n");
 			return -1;
@@ -848,6 +866,8 @@ int ul_init_globals(void)
 	kv_store_col.len = strlen(kv_store_col.s);
 	attr_col.len = strlen(attr_col.s);
 	last_mod_col.len = strlen(last_mod_col.s);
+	if (ul_ha_shtag.s)
+		ul_ha_shtag.len = strlen(ul_ha_shtag.s);
 
 	if (ul_hash_size > 16) {
 		LM_WARN("hash too big! max 2 ^ 16\n");

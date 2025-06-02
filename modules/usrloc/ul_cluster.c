@@ -21,6 +21,7 @@
  */
 
 #include "../../forward.h"
+#include "../../lib/str_buffer.h"
 
 #include "ul_cluster.h"
 #include "ul_mod.h"
@@ -31,6 +32,12 @@ str contact_repl_cap = str_init("usrloc-contact-repl");
 
 struct clusterer_binds clusterer_api;
 str ul_shtag_key = str_init("_st");
+
+/**
+ * @brief Format for param string building.
+ *
+ */
+static str param_fmt = str_init("%.*s%s%.*s%s");
 
 int ul_init_cluster(void)
 {
@@ -69,10 +76,16 @@ int ul_init_cluster(void)
 
 static inline void bin_push_urecord(bin_packet_t *packet, urecord_t *r)
 {
+	str st;
+
 	bin_push_str(packet, r->domain);
 	bin_push_str(packet, &r->aor);
 	bin_push_int(packet, r->label);
 	bin_push_int(packet, r->next_clabel);
+
+	st = store_serialize(r->kv_storage);
+	bin_push_str(packet, &st);
+	store_free_buffer(&st);
 }
 
 void replicate_urecord_insert(urecord_t *r)
@@ -202,6 +215,8 @@ void bin_push_contact(bin_packet_t *packet, urecord_t *r, ucontact_t *c,
         const struct ct_match *match)
 {
 	str st;
+	str_buffer *buffer = NULL;
+	str params = STR_NULL;		
 
 	bin_push_str(packet, r->domain);
 	bin_push_str(packet, &r->aor);
@@ -229,7 +244,8 @@ void bin_push_contact(bin_packet_t *packet, urecord_t *r, ucontact_t *c,
 	bin_push_str(packet, c->sock?get_socket_internal_name(c->sock):NULL);
 	bin_push_int(packet, c->cseq);
 	bin_push_int(packet, c->flags);
-	bin_push_int(packet, c->cflags);
+	st = bitmask_to_flag_list(FLAG_TYPE_BRANCH, c->cflags);
+	bin_push_str(packet, &st);
 	bin_push_int(packet, c->methods);
 
 	st.s   = (char *)&c->last_modified;
@@ -239,6 +255,39 @@ void bin_push_contact(bin_packet_t *packet, urecord_t *r, ucontact_t *c,
 	st = store_serialize(c->kv_storage);
 	bin_push_str(packet, &st);
 	store_free_buffer(&st);
+
+	buffer = new_str_buffer();
+	if(!buffer) {
+		LM_ERR("Error allocating str_buffer\n");
+	} else {
+		param_t *param = c->params;
+		while(param) {
+			if(param->name.len > 0) {
+				if(param->body.len > 0) {
+					str_buffer_append_str_fmt(buffer, &param_fmt,
+							param->name.len, param->name.s, "=", param->body.len, param->body.s,
+							param->next ? ";" : "");
+				} else {
+					str_buffer_append_str_fmt(buffer, &param_fmt,
+							param->name.len, param->name.s, "", 0, NULL,
+							param->next ? ";" : "");
+				}
+			}
+
+			param = param->next;
+		}
+	}
+
+	if(str_buffer_has_error(buffer)) {
+		LM_ERR("str_buffer had memory allocating errors while building\n");
+		free_str_buffer(buffer);
+	} else if(!str_buffer_to_str(buffer, &params)) {
+		LM_ERR("str_buffer unable to get result\n");
+		free_str_buffer(buffer);
+	}
+	free_str_buffer(buffer);
+	bin_push_str(packet, &params);
+	pkg_free(params.s);
 
 	bin_push_ctmatch(packet, match);
 }
@@ -317,7 +366,8 @@ void replicate_ucontact_update(urecord_t *r, ucontact_t *ct,
 	bin_push_str(&packet, ct->sock?get_socket_internal_name(ct->sock):NULL);
 	bin_push_int(&packet, ct->cseq);
 	bin_push_int(&packet, ct->flags);
-	bin_push_int(&packet, ct->cflags);
+	st = bitmask_to_flag_list(FLAG_TYPE_BRANCH, ct->cflags);
+	bin_push_str(&packet, &st);
 	bin_push_int(&packet, ct->methods);
 
 	st.s   = (char *)&ct->last_modified;
@@ -418,10 +468,11 @@ error:
  */
 static int receive_urecord_insert(bin_packet_t *packet)
 {
-	str d, aor;
+	str d, aor, kv_str;
 	urecord_t *r;
 	udomain_t *domain;
 	int sl;
+	short pkg_ver = get_bin_pkg_version(packet);
 
 	bin_pop_str(packet, &d);
 	bin_pop_str(packet, &aor);
@@ -452,6 +503,10 @@ static int receive_urecord_insert(bin_packet_t *packet)
 	if (domain->table[sl].next_label <= r->label)
 		domain->table[sl].next_label = r->label + 1;
 
+	if (pkg_ver >= UL_BIN_V5) {
+		bin_pop_str(packet, &kv_str);
+		r->kv_storage = store_deserialize(&kv_str);
+	}
 out:
 	unlock_udomain(domain, &aor);
 
@@ -501,7 +556,7 @@ static int receive_ucontact_insert(bin_packet_t *packet)
 {
 	static ucontact_info_t ci;
 	static str d, aor, contact_str, callid,
-		user_agent, path, attr, st, sock, kv_str;
+		user_agent, path, attr, st, sock, kv_str, cflags_str, params_str;
 	udomain_t *domain;
 	urecord_t *record;
 	ucontact_t *contact;
@@ -510,6 +565,7 @@ static int receive_ucontact_insert(bin_packet_t *packet)
 	unsigned int rlabel;
 	struct ct_match cmatch = {CT_MATCH_NONE, NULL};
 	short pkg_ver = get_bin_pkg_version(packet);
+	param_hooks_t hooks;
 
 	memset(&ci, 0, sizeof ci);
 
@@ -558,19 +614,33 @@ static int receive_ucontact_insert(bin_packet_t *packet)
 		if (!ci.sock)
 			LM_DBG("non-local socket <%.*s>\n", sock.len, sock.s);
 	} else {
-		ci.sock =  NULL;
+		ci.sock = NULL;
 	}
 
 	bin_pop_int(packet, &ci.cseq);
 	bin_pop_int(packet, &ci.flags);
-	bin_pop_int(packet, &ci.cflags);
+	if (pkg_ver <= UL_BIN_V3) {
+		bin_pop_int(packet, &ci.cflags);
+	} else {
+		bin_pop_str(packet, &cflags_str);
+		ci.cflags = flag_list_to_bitmask(
+		        (str_const *)&cflags_str, FLAG_TYPE_BRANCH, FLAG_DELIM, 0);
+	}
 	bin_pop_int(packet, &ci.methods);
 
 	bin_pop_str(packet, &st);
 	memcpy(&ci.last_modified, st.s, sizeof ci.last_modified);
 
-	bin_pop_str(packet, &kv_str);
-	ci.packed_kv_storage = &kv_str;
+	if (pkg_ver >= UL_BIN_V5) {
+		bin_pop_str(packet, &kv_str);
+		ci.packed_kv_storage = &kv_str;
+	}
+	if (pkg_ver >= UL_BIN_V6) {
+		bin_pop_str(packet, &params_str);
+		if(parse_params(&params_str, CLASS_CONTACT, &hooks, &ci.params) < 0) {
+			LM_WARN("Error while parsing parameters: %.*s\n", params_str.len, params_str.s);
+		}		
+	}
 
 	if (pkg_ver <= UL_BIN_V2)
 		cmatch = (struct ct_match){CT_MATCH_CONTACT_CALLID, NULL};
@@ -657,7 +727,7 @@ static int receive_ucontact_update(bin_packet_t *packet)
 {
 	static ucontact_info_t ci;
 	static str d, aor, contact_str, callid,
-		user_agent, path, attr, st, kv_str, sock;
+		user_agent, path, attr, st, kv_str, sock, cflags_str;
 	udomain_t *domain;
 	urecord_t *record;
 	ucontact_t *contact;
@@ -716,7 +786,13 @@ static int receive_ucontact_update(bin_packet_t *packet)
 
 	bin_pop_int(packet, &ci.cseq);
 	bin_pop_int(packet, &ci.flags);
-	bin_pop_int(packet, &ci.cflags);
+	if (pkg_ver <= UL_BIN_V3) {
+		bin_pop_int(packet, &ci.cflags);
+	} else {
+		bin_pop_str(packet, &cflags_str);
+		ci.cflags = flag_list_to_bitmask(
+		        (str_const *)&cflags_str, FLAG_TYPE_BRANCH, FLAG_DELIM, 0);
+	}
 	bin_pop_int(packet, &ci.methods);
 
 	bin_pop_str(packet, &st);
@@ -911,48 +987,36 @@ void receive_binary_packets(bin_packet_t *pkt)
 {
 	int rc;
 
-	/* Supported smooth BIN transitions:
-		UL_BIN_V2 -> UL_BIN_V3: the "cmatch" has been added
-						(assume: CT_MATCH_CONTACT_CALLID if not present)
-	*/
-	short ver = get_bin_pkg_version(pkt);
-
 	LM_DBG("received a binary packet [%d]!\n", pkt->type);
 
 	switch (pkt->type) {
 	case REPL_URECORD_INSERT:
-		if (ver != UL_BIN_V2)
-			ensure_bin_version(pkt, UL_BIN_VERSION);
+		_ensure_bin_version2(pkt, UL_BIN_V2, UL_BIN_V5, "usrloc aor-ins packet");
 		rc = receive_urecord_insert(pkt);
 		break;
 
 	case REPL_URECORD_DELETE:
-		if (ver != UL_BIN_V2)
-			ensure_bin_version(pkt, UL_BIN_VERSION);
+		_ensure_bin_version2(pkt, UL_BIN_V2, UL_BIN_V5, "usrloc aor-del packet");
 		rc = receive_urecord_delete(pkt);
 		break;
 
 	case REPL_UCONTACT_INSERT:
-		if (ver != UL_BIN_V2)
-			ensure_bin_version(pkt, UL_BIN_VERSION);
+		_ensure_bin_version2(pkt, UL_BIN_V2, UL_BIN_V5, "usrloc ct-ins packet");
 		rc = receive_ucontact_insert(pkt);
 		break;
 
 	case REPL_UCONTACT_UPDATE:
-		if (ver != UL_BIN_V2)
-			ensure_bin_version(pkt, UL_BIN_VERSION);
+		_ensure_bin_version2(pkt, UL_BIN_V2, UL_BIN_V5, "usrloc ct-upd packet");
 		rc = receive_ucontact_update(pkt);
 		break;
 
 	case REPL_UCONTACT_DELETE:
-		if (ver != UL_BIN_V2)
-			ensure_bin_version(pkt, UL_BIN_VERSION);
+		_ensure_bin_version2(pkt, UL_BIN_V2, UL_BIN_V5, "usrloc ct-del packet");
 		rc = receive_ucontact_delete(pkt);
 		break;
 
 	case SYNC_PACKET_TYPE:
-		if (ver != UL_BIN_V2)
-			_ensure_bin_version(pkt, UL_BIN_VERSION, "usrloc sync packet");
+		_ensure_bin_version2(pkt, UL_BIN_V2, UL_BIN_V5, "usrloc sync packet");
 		rc = receive_sync_packet(pkt);
 		break;
 

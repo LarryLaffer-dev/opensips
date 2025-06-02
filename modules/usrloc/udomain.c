@@ -167,6 +167,7 @@ cdb_ctdict2info(const cdb_dict_t *ct_fields, str *contact)
 	static ucontact_info_t ci;
 	static str callid, ua, received, host, path, instance;
 	static str attr;
+	param_hooks_t hooks;
 	struct list_head *_;
 
 	cdb_pair_t *pair;
@@ -217,9 +218,19 @@ cdb_ctdict2info(const cdb_dict_t *ct_fields, str *contact)
 				ci.methods = pair->val.val.i32;
 			break;
 		case 'p':
-			path = pair->val.val.st;
-			ci.path = &path;
-			break;
+			switch (pair->key.name.s[2]) {
+			// path
+			case 't':
+				path = pair->val.val.st;
+				ci.path = &path;
+				break;
+			// params
+			case 'r':
+				if(parse_params(&pair->val.val.st, CLASS_CONTACT, &hooks, &ci.params) < 0) {
+					LM_WARN("Error while parsing parameters: %.*s\n", pair->val.val.st.len, pair->val.val.st.s);
+				}
+				break;
+			}
 		case 'q':
 			ci.q = pair->val.val.i32;
 			break;
@@ -271,9 +282,10 @@ static inline ucontact_info_t* dbrow2info(db_val_t *vals, str *contact)
 {
 	static ucontact_info_t ci;
 	static str callid, ua, received, host, path, instance;
-	static str attr, packed_kv;
+	static str attr, packed_kv, params;
 	int port, proto;
 	char *p;
+	param_hooks_t hooks;
 
 	memset( &ci, 0, sizeof(ucontact_info_t));
 
@@ -416,6 +428,17 @@ static inline ucontact_info_t* dbrow2info(db_val_t *vals, str *contact)
 
 	ci.attr = &attr;
 
+	params.s = (char*)VAL_STRING(vals+17);
+	if (VAL_NULL(vals+17) || !attr.s) {
+		params.s = NULL;
+		params.len = 0;
+	} else {
+		params.len  = strlen(params.s);
+		if(parse_params(&params, CLASS_CONTACT, &hooks, &ci.params) < 0) {
+			LM_WARN("Error while parsing parameters: %.*s\n", params.len, params.s);
+		}
+	}
+	
 	return &ci;
 }
 
@@ -464,6 +487,7 @@ int preload_udomain(db_con_t* _c, udomain_t* _d)
 	columns[15] = &sip_instance_col;
 	columns[16] = &kv_store_col;
 	columns[17] = &attr_col;
+	columns[18] = &params_col;
 	columns[UL_COLS - 1] = &domain_col; /* "domain" always stays last */
 
 	if (ul_dbf.use_table(_c, _d->name) < 0) {
@@ -765,6 +789,7 @@ urecord_t* db_load_urecord(db_con_t* _c, udomain_t* _d, str *_aor)
 	columns[14] = &sip_instance_col;
 	columns[15] = &kv_store_col;
 	columns[16] = &attr_col;
+	columns[17] = &params_col;
 
 	if (desc_time_order)
 		order = &last_mod_col;
@@ -883,7 +908,7 @@ cdb_load_urecord_locations(const udomain_t *_d, const str *_aor, urecord_t *_r)
 		row = list_entry(_, cdb_row_t, list);
 		pair = cdb_dict_fetch(&home_ip_key, &row->dict);
 		if (!pair) {
-			LM_ERR("metadata with no home_ip, aor: %.*s", _aor->len, _aor->s);
+			LM_ERR("metadata with no home_ip, aor: %.*s\n", _aor->len, _aor->s);
 			continue;
 		}
 
@@ -975,7 +1000,8 @@ urecord_t* cdb_load_urecord(const udomain_t* _d, const str *_aor)
 	}
 
 	if (res.count != 1)
-		LM_BUG("more than 1 result for AoR %.*s\n", _aor->len, _aor->s);
+		LM_ERR("more than 1 result (%d) for AoR %.*s, consider a full clear "
+		        "of the cacheDB keys\n", res.count, _aor->len, _aor->s);
 
 	r = NULL;
 
@@ -990,7 +1016,8 @@ urecord_t* cdb_load_urecord(const udomain_t* _d, const str *_aor)
 		}
 	}
 
-	LM_ERR("no 'contacts' field for AoR %.*s\n", _aor->len, _aor->s);
+	LM_ERR("no 'contacts' field for AoR %.*s (foreign cacheDB data?!)\n",
+	        _aor->len, _aor->s);
 	goto out_null;
 
 have_contacts:
@@ -1178,7 +1205,7 @@ int mem_timer_udomain(udomain_t* _d)
 				if (exists_ulcb_type(UL_AOR_EXPIRE))
 					run_ul_callbacks(UL_AOR_EXPIRE, ptr, NULL);
 
-				if (location_cluster) {
+				if (location_cluster && ul_is_active_node()) {
 					if (cluster_mode == CM_FEDERATION_CACHEDB &&
 					    cdb_update_urecord_metadata(&ptr->aor, 1) != 0)
 						LM_ERR("failed to delete metadata, aor: %.*s\n",
