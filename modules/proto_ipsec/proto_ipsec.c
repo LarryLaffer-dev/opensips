@@ -412,9 +412,11 @@ static int proto_ipsec_send(const struct socket_info* source,
 		t = tm_ipsec.t_gett();
 		if (t && t != T_UNDEFINED)
 			ctx = IPSEC_CTX_TM_GET(t);
-		if (!ctx)
+		if (!ctx || ctx->state != IPSEC_STATE_OK) {
+			LM_DBG("no valid IPSec context for %s:%hu\n", ip_addr2a(&ip), port);
 			ctx = ipsec_get_ctx_ip_port(&ip, port);
-		if (ctx) {
+		}
+		if (ctx && ctx->state == IPSEC_STATE_OK) {
 			ipsec_si = ctx->client;
 			if (source->proto == PROTO_UDP)
 				source = ((struct socket_info_pair *)ipsec_si->extra_data)->udp;
@@ -428,7 +430,7 @@ static int proto_ipsec_send(const struct socket_info* source,
 			}
 			IPSEC_CTX_UNREF(ctx);
 		} else {
-			LM_WARN("could not find ctx for %s:%hu\n", ip_addr2a(&ip), port);
+			LM_WARN("could not find valid ctx for %s:%hu\n", ip_addr2a(&ip), port);
 		}
 	} else {
 		/* this should be a TCP reply - preserve the socket */
