@@ -738,9 +738,10 @@ static int w_ipsec_create(struct sip_msg *msg, int *_port_ps, int *_port_pc,
 		 * existing SA/ctx for this USER - try to locate it
 		 */
 		ctx = IPSEC_CTX_TM_GET(t);
-		if (ctx)
+		LM_DBG("got ctx %p for t=%p\n", ctx, t);
+		if (ctx && ctx->state == IPSEC_STATE_OK && ctx->me.port_c != port_pc) {
 			prev_port_pc = ctx->me.port_c;
-		else
+		} else
 			prev_port_pc = 0;
 	} else {
 		prev_port_pc = 0;
@@ -752,13 +753,14 @@ static int w_ipsec_create(struct sip_msg *msg, int *_port_ps, int *_port_pc,
 	ret = -2;
 	ss = find_ipsec_socket_info(&req->rcv.dst_ip, port_ps, port_pc, prev_port_pc);
 	if (!ss) {
-			LM_INFO("could not find a server listener on %s:%d!\n",
+			LM_ERR("could not find a server listener on %s:%d!\n",
 				ip_addr2a(&req->rcv.dst_ip), port_ps);
 		goto release_user;
 	}
+	/* locate the client IP */
 	sc = find_ipsec_socket_info(&req->rcv.dst_ip, port_pc, ss->port_no, prev_port_pc);
 	if (!sc) {
-		LM_INFO("could not find a client listener on %s:%d!\n",
+		LM_ERR("could not find a client listener on %s:%d!\n",
 				ip_addr2a(&req->rcv.dst_ip), port_pc);
 		goto release_user;
 	}
