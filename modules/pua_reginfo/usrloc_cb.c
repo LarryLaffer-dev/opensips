@@ -358,7 +358,7 @@ void reginfo_usrloc_cb(void *binding, ul_cb_type type, ul_cb_extra *_) {
 	str s, str_dup;
 
 	/* Get the URecord for the contact */
-	LM_ERR("Searching urecord for contact-AOR %.*s (Contact %.*s), type %i\n",
+	LM_DBG("Searching urecord for contact-AOR %.*s (Contact %.*s), type %i\n",
 		contact->aor->len, contact->aor->s,
 		contact->c.len, contact->c.s, (int)type);
 	ul.get_urecord(ul_domain, contact->aor, &record);
