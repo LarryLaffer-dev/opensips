@@ -31,7 +31,7 @@
 		if (__ret__ > 0) \
 			__ret__ = -__ret__; \
 		if (__ret__ != (__retok__)) { \
-			LM_ERR("error in %s: %d\n", #__call__, __ret__); \
+			LM_WARN("error in %s: %d\n", #__call__, __ret__); \
 			return __retval__; \
 		} \
 	} while (0)
@@ -46,7 +46,7 @@
 		if (__ret__ > 0) \
 			__ret__ = -__ret__; \
 		if (__ret__ != (__retok__)) { \
-			LM_ERR("error in %s: %d\n", #__call__, __ret__); \
+			LM_WARN("error in %s: %d\n", #__call__, __ret__); \
 			goto __goto__; \
 		} \
 	} while (0)
