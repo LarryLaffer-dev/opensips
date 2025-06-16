@@ -1,0 +1,7 @@
+{
+    "files.associations": {
+        "mutex": "c",
+        "ranges": "c",
+        "list": "c"
+    }
+}

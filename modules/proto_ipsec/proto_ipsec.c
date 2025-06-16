@@ -412,11 +412,32 @@ static int proto_ipsec_send(const struct socket_info* source,
 		t = tm_ipsec.t_gett();
 		if (t && t != T_UNDEFINED)
 			ctx = IPSEC_CTX_TM_GET(t);
-		if (!ctx || ctx->state != IPSEC_STATE_OK) {
-			LM_DBG("no valid IPSec context for %s:%hu\n", ip_addr2a(&ip), port);
-			ctx = ipsec_get_ctx_ip_port(&ip, port);
+		if (ctx) {
+			LM_ERR("Got context %p (state = %d) from transaction\n",
+					ctx, ctx->state);
+			if (ctx->state == IPSEC_STATE_INVALID) {
+				LM_ERR("invalid state (%d) for %s:%hu\n", ctx->state,
+						ip_addr2a(&ip), port);
+				IPSEC_CTX_UNREF(ctx);
+				ctx = NULL;
+			} else {
+				IPSEC_CTX_REF(ctx); /* ref it, so we can use it */
+			}
 		}
-		if (ctx && ctx->state == IPSEC_STATE_OK) {
+		if (!ctx) {
+			LM_ERR("no valid IPSec context for %s:%hu\n", ip_addr2a(&ip), port);
+			ctx = ipsec_get_ctx_ip_port(&ip, port);
+			if (ctx) {
+				LM_ERR("Got context %p (state = %d) for %s:%hu\n",
+						ctx, ctx->state, ip_addr2a(&ip), port);
+				if (ctx->state == IPSEC_STATE_INVALID) {
+					LM_ERR("invalid state (%d) for %s:%hu\n", ctx->state,
+							ip_addr2a(&ip), port);
+					ctx = NULL;
+				}						
+			}
+		}
+		if (ctx) {
 			ipsec_si = ctx->client;
 			if (source->proto == PROTO_UDP)
 				source = ((struct socket_info_pair *)ipsec_si->extra_data)->udp;
@@ -429,6 +450,7 @@ static int proto_ipsec_send(const struct socket_info* source,
 				to = &ue_to;
 			}
 			IPSEC_CTX_UNREF(ctx);
+			ctx = NULL;
 		} else {
 			LM_WARN("could not find valid ctx for %s:%hu\n", ip_addr2a(&ip), port);
 		}
@@ -716,7 +738,7 @@ static int w_ipsec_create(struct sip_msg *msg, int *_port_ps, int *_port_pc,
 
 	user = ipsec_get_user(&req->rcv.src_ip, impi, impu);
 	if (!user) {
-		LM_ERR("could not get a new IPSec user\n");
+		LM_WARN("could not get a new IPSec user\n");
 		return -1;
 	}
 
@@ -738,11 +760,17 @@ static int w_ipsec_create(struct sip_msg *msg, int *_port_ps, int *_port_pc,
 		 * existing SA/ctx for this USER - try to locate it
 		 */
 		ctx = IPSEC_CTX_TM_GET(t);
-		LM_DBG("got ctx %p for t=%p\n", ctx, t);
-		if (ctx && ctx->state == IPSEC_STATE_OK && ctx->me.port_c != port_pc) {
+		LM_DBG("got ctx %p for t=%p, state %d\n", ctx?ctx:0, t, ctx?ctx->state:-1);
+		if (ctx && ctx->state == IPSEC_STATE_OK && ctx->me.port_c != port_pc)
 			prev_port_pc = ctx->me.port_c;
-		} else
+		else
 			prev_port_pc = 0;
+		if (ctx && ctx->state == IPSEC_STATE_OK) {
+			LM_DBG("found existing IPSec context %p for user %.*s, marked as temporary, to be deleted\n",
+				ctx, impi->len, impi->s);
+			/* add the context as temporarily, so the "old" context gets removed on timer */
+			ipsec_ctx_add_tmp(ctx);
+		}
 	} else {
 		prev_port_pc = 0;
 		/* message was received unprotected - remove all temporary SAs */
@@ -1026,6 +1054,7 @@ static int ipsec_handle_register(struct sip_msg *msg, struct socket_info *si)
 		LM_ERR("could not find any IPSec context!\n");
 		goto drop_user;
 	}
+	LM_DBG("got ctx %p for user %.*s, state %d\n", ctx, impi->len, impi->s, ctx->state);
 	lock_get(&ctx->lock);
 	switch (ctx->state) {
 	case IPSEC_STATE_TMP:
@@ -1394,7 +1423,7 @@ static void ipsec_usrloc_update(ucontact_t *contact,
 	struct ipsec_user *user;
 	struct ipsec_ctx *ctx;
 
-	LM_DBG("updating IPSec context for %.*s (%.*s)\n",
+	LM_ERR("updating IPSec context for %.*s (%.*s)\n",
 			contact->aor->len, contact->aor->s,
 			contact->c.len, contact->c.s);
 	user = ipsec_usrloc_get_user(contact);

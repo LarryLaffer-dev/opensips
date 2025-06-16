@@ -42,6 +42,10 @@ enum ipsec_state {
 	IPSEC_STATE_INVALID,
 };
 
+#define VALID_IPSEC_STATE(_s) \
+	((_s) == IPSEC_STATE_TMP || \
+	 (_s) == IPSEC_STATE_OK)
+
 #define ipsec_socket mnl_socket
 
 #include "../../str.h"
@@ -74,7 +78,7 @@ struct ipsec_ctx {
 
 #define IPSEC_CTX_REF_COUNT_UNSAFE(_ctx, _c) \
 	do { \
-		LM_DBG("REF: ctx=%p ref=%d +%d = %d\n", (_ctx), (_ctx)->ref, (_c), (_ctx)->ref + (_c)); \
+		LM_ERR("REF: ctx=%p ref=%d +%d = %d\n", (_ctx), (_ctx)->ref, (_c), (_ctx)->ref + (_c)); \
 		(_ctx)->ref += (_c); \
 	} while (0)
 #define IPSEC_CTX_REF_COUNT(_ctx, _c) \
@@ -122,11 +126,13 @@ void ipsec_ctx_push(struct ipsec_ctx *ctx);
 struct ipsec_ctx *ipsec_ctx_get(void);
 void ipsec_ctx_push_user(struct ipsec_user *user, struct ipsec_ctx *ctx, enum ipsec_state state);
 void ipsec_ctx_push_tmp_user(struct ipsec_user *user, struct ipsec_ctx *ctx);
+void ipsec_ctx_add_tmp(struct ipsec_ctx *ctx);
 void ipsec_ctx_release_tmp_user(struct ipsec_user *user);
 void ipsec_ctx_release_user(struct ipsec_ctx *ctx);
 void ipsec_ctx_release(struct ipsec_ctx *ctx);
 int ipsec_ctx_release_unsafe(struct ipsec_ctx *ctx);
 void ipsec_ctx_remove_tmp(struct ipsec_ctx *ctx);
+void ipsec_ctx_remove_free_tmp(struct ipsec_ctx *ctx, int _free);
 void ipsec_ctx_extend_tmp(struct ipsec_ctx *ctx);
 
 #endif /* _IPSEC_H_ */
