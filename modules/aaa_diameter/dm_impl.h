@@ -144,6 +144,7 @@ int init_mutex_cond(pthread_mutex_t *mutex, pthread_cond_t *cond);
 
 extern struct list_head dm_unreplied_req;
 extern gen_lock_t dm_unreplied_req_lk;
+extern gen_lock_t dm_inbound_req_lk;
 extern unsigned int dm_unreplied_req_timeout;
 extern char *dm_conf_filename;
 extern char *extra_avps_file;

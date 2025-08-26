@@ -1,0 +1,10 @@
+{
+    "files.associations": {
+        "usrloc.h": "c",
+        "parse_fline.h": "c",
+        "common.h": "c",
+        "data_lump.h": "c",
+        "digest.h": "c",
+        "regtime.h": "c"
+    }
+}
