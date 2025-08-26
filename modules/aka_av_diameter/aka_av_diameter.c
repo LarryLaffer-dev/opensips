@@ -46,7 +46,8 @@ static diameter_api dm_api;
 static aka_av_api aka_api;
 static diameter_conn *dm_conn;
 static str dm_aaa_url = {NULL, 0};
-static str aka_av_dm_realm = {"diameter.test", 0};
+static str aka_av_host = {"scscf.diameter.test", 0};
+static str aka_av_dm_realm = {NULL, 0};
 
 static int aka_av_diameter_fetch(str *realm, str *impu, str *impi,
 		str *resync, int algmask, int no, int async);
@@ -91,6 +92,7 @@ static const dep_export_t deps = {
  */
 static const param_export_t params[] = {
 	{ "aaa_url", STR_PARAM, &dm_aaa_url.s },
+	{ "origin_host", STR_PARAM,   &aka_av_host.s },
 	{ "realm", STR_PARAM,   &aka_av_dm_realm.s },
 	{0, 0, 0}
 };
@@ -136,6 +138,7 @@ static int mod_init(void)
 	}
 
 	dm_aaa_url.len = strlen(dm_aaa_url.s);
+	aka_av_host.len = strlen(aka_av_host.s);
 	aka_av_dm_realm.len = strlen(aka_av_dm_realm.s);
 
 	if (diameter_bind_api(&dm_api) < 0)
@@ -515,9 +518,14 @@ static int aka_av_diameter_fetch(str *realm, str *impu, str *impi,
 
 	cJSON_ADD_OBJ(req, AKA_AV_DM_SESSION, cJSON_CreateString(sess));
 	sess_obj = cJSON_GetArrayItem(req, 0)->child; /* the session is the first */
-	cJSON_ADD_OBJ(req, AKA_AV_DM_ORIGIN_HOST, cJSON_CreateString(aka_av_dm_realm.s));
-	cJSON_ADD_OBJ(req, AKA_AV_DM_ORIGIN_REALM, cJSON_CreateStr(realm->s, realm->len));
-	cJSON_ADD_OBJ(req, AKA_AV_DM_DST_REALM, cJSON_CreateStr(realm->s, realm->len));
+	cJSON_ADD_OBJ(req, AKA_AV_DM_ORIGIN_HOST, cJSON_CreateString(aka_av_host.s));
+	if (aka_av_dm_realm.len > 0) {
+		cJSON_ADD_OBJ(req, AKA_AV_DM_ORIGIN_REALM, cJSON_CreateStr(aka_av_dm_realm.s, aka_av_dm_realm.len));
+		cJSON_ADD_OBJ(req, AKA_AV_DM_DST_REALM, cJSON_CreateStr(aka_av_dm_realm.s, aka_av_dm_realm.len));
+	} else {
+		cJSON_ADD_OBJ(req, AKA_AV_DM_ORIGIN_REALM, cJSON_CreateStr(realm->s, realm->len));
+		cJSON_ADD_OBJ(req, AKA_AV_DM_DST_REALM, cJSON_CreateStr(realm->s, realm->len));
+	}
 
 	tmp = cJSON_CreateArray();
 	if (!tmp) {
@@ -531,7 +539,7 @@ static int aka_av_diameter_fetch(str *realm, str *impu, str *impi,
 	cJSON_ADD_OBJ(req, AKA_AV_DM_AUTH_SESS, cJSON_CreateNumber(1)); /* NO_STATE_MAINTAINED */
 	cJSON_ADD_OBJ(req, AKA_AV_DM_USER_NAME, cJSON_CreateStr(impi->s, impi->len));
 	cJSON_ADD_OBJ(req, AKA_AV_DM_PUBLIC_ID, cJSON_CreateStr(impu->s, impu->len));
-	cJSON_ADD_OBJ(req, AKA_AV_DM_SERVER_NAME, cJSON_CreateStr(realm->s, realm->len)); /* TODO */
+	cJSON_ADD_OBJ(req, AKA_AV_DM_SERVER_NAME, cJSON_CreateStr(aka_av_host.s, aka_av_host.len)); /* TODO */
 	cJSON_ADD_OBJ(req, AKA_AV_DM_AUTH_ITEMS, cJSON_CreateNumber(count));
 	tmp = cJSON_CreateArray();
 	if (!tmp) {
