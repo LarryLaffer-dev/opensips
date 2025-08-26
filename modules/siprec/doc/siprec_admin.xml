@@ -261,6 +261,9 @@ modparam("siprec", "skip_failover_codes", "[34][0-9][0-9]")
 				<listitem><para>
 					<emphasis>server</emphasis> - the SIPREC server handing this call;
 				</para></listitem>
+				<listitem><para>
+					<emphasis>instance</emphasis> - the SIPREC instance this event is triggered for;
+				</para></listitem>
 			</itemizedlist>
 		</section>
 
@@ -281,7 +284,7 @@ modparam("siprec", "skip_failover_codes", "[34][0-9][0-9]")
 		<title>Exported Functions</title>
 		<section id="func_siprec_start_recording" xreflabel="siprec_start_recording()">
 			<title>
-			<function moreinfo="none">siprec_start_recording(srs)</function>
+			<function moreinfo="none">siprec_start_recording(srs[, instance])</function>
 			</title>
 			<para>
 				Calling this function on an initial
@@ -294,8 +297,14 @@ modparam("siprec", "skip_failover_codes", "[34][0-9][0-9]")
 			</para>
 			<para>
 				<emphasis>Note</emphasis> that the call recording is not
-				started right away, but only when the call is actually
-				answered - 200 OK is sent by the callee.
+				started right away, but only when the callee provides an
+				SDP as well (usually in a 200 OK, or possibly a 183 Ringing).
+			</para>
+			<para>
+				<emphasis>Note</emphasis> if you only want to start recording
+				when the call is established (200 OK is received), then you
+				should call this function in the onreply route processing that
+				200 OK.
 			</para>
 			<para>
 				Parameters:
@@ -305,6 +314,12 @@ modparam("siprec", "skip_failover_codes", "[34][0-9][0-9]")
 					URIs. These URIs are used in the order specified. See
 					<xref linkend="siprec_srs_failover"/> for more
 					information.
+				</para></listitem>
+				<listitem><para>
+					<emphasis>instance</emphasis> (string, optional) - used to
+					start a particular SIPREC <emphasis>instance</emphasis>.
+					When missing, the <emphasis>default</emphasis> instance
+					is started.
 				</para></listitem>
 				</itemizedlist>
 			</para>
@@ -380,11 +395,22 @@ modparam("siprec", "skip_failover_codes", "[34][0-9][0-9]")
 		</section>
 		<section id="func_siprec_pause_recording" xreflabel="siprec_pause_recording()">
 			<title>
-			<function moreinfo="none">siprec_pause_recording()</function>
+			<function moreinfo="none">siprec_pause_recording([instance])</function>
 			</title>
 			<para>
 				Pauses the recording for the ongoing call. Should be called after
 				the dialog has matched.
+			</para>
+			<para>
+				Parameters:
+				<itemizedlist>
+				<listitem><para>
+					<emphasis>instance</emphasis> (string, optional) - used to
+					pause a particular SIPREC <emphasis>instance</emphasis>.
+					When missing, the <emphasis>default</emphasis> instance
+					is paused.
+				</para></listitem>
+				</itemizedlist>
 			</para>
 			<para>
 				This function can be used from any route.
@@ -403,11 +429,22 @@ modparam("siprec", "skip_failover_codes", "[34][0-9][0-9]")
 		</section>
 		<section id="func_siprec_resume_recording" xreflabel="siprec_resume_recording()">
 			<title>
-			<function moreinfo="none">siprec_resume_recording()</function>
+			<function moreinfo="none">siprec_resume_recording([instance])</function>
 			</title>
 			<para>
 				Resumes the recording for the ongoing call. Should be called after
 				the dialog has matched.
+			</para>
+			<para>
+				Parameters:
+				<itemizedlist>
+				<listitem><para>
+					<emphasis>instance</emphasis> (string, optional) - used to
+					resume a particular SIPREC <emphasis>instance</emphasis>.
+					When missing, the <emphasis>default</emphasis> instance
+					is resumed.
+				</para></listitem>
+				</itemizedlist>
 			</para>
 			<para>
 				This function can be used from any route.
@@ -426,11 +463,22 @@ modparam("siprec", "skip_failover_codes", "[34][0-9][0-9]")
 		</section>
 		<section id="func_siprec_stop_recording" xreflabel="siprec_stop_recording()">
 			<title>
-			<function moreinfo="none">siprec_stop_recording()</function>
+			<function moreinfo="none">siprec_stop_recording([instance])</function>
 			</title>
 			<para>
 				Stops the recording for the ongoing call. Should be called for SIPREC
 				sessions that have been previously started.
+			</para>
+			<para>
+				Parameters:
+				<itemizedlist>
+				<listitem><para>
+					<emphasis>instance</emphasis> (string, optional) - used to
+					stop a particular SIPREC <emphasis>instance</emphasis>.
+					When missing, the <emphasis>default</emphasis> instance
+					is stopped.
+				</para></listitem>
+				</itemizedlist>
 			</para>
 			<para>
 				This function can be used from any route.
@@ -447,6 +495,46 @@ modparam("siprec", "skip_failover_codes", "[34][0-9][0-9]")
 	</programlisting>
 			</example>
 		</section>
+		<section id="func_siprec_send_indialog" xreflabel="siprec_send_indialog([hdrs[, body[, instance]]])">
+			<title>
+			<function moreinfo="none">siprec_send_indialog([hdrs[, body]])</function>
+			</title>
+			<para>
+				Sends an arbitrary in-dialog request to the SRS.
+			</para>
+			<para>
+				This function can be used from any route.
+			</para>
+			<para>
+				Parameters:
+				<itemizedlist>
+				<listitem><para>
+					<emphasis>headers</emphasis> (string, optional) - a set of headers
+					that will be added to the generated request.
+				</para></listitem>
+				<listitem><para>
+					<emphasis>body</emphasis> (string, optional) - the body that
+					will be added to the generated request.
+				</para></listitem>
+				<listitem><para>
+					<emphasis>instance</emphasis> (string, optional) - used to
+					send a request within a particular SIPREC <emphasis>instance</emphasis>.
+					When missing, the request is sent in to the <emphasis>default</emphasis>
+					instance.
+				</para></listitem>
+				</itemizedlist>
+			</para>
+			<example>
+			<title>Use <function>siprec_send_indialog()</function> </title>
+			<programlisting format="linespecific">
+	...
+	if (has_totag() &amp;&amp; is_method("INFO")) {
+		siprec_send_indialog("Content-Type: $hdr(Content-Type)\r\n", $rb);
+	}
+	...
+	</programlisting>
+			</example>
+		</section>
 	</section>
 
 	<section id="exported_pseudo_variables">
@@ -457,6 +545,11 @@ modparam("siprec", "skip_failover_codes", "[34][0-9][0-9]")
 				Used to modify/describe different siprec sessions
 				parameters that should be taken into account by the
 				<xref linkend="func_siprec_start_recording"/> function.
+			</para>
+			<para>
+				The variable can be indexed with the <emphasis>instance</emphasis>
+				the user wants to tune the variable for. If missing, the
+				the <emphasis>default</emphasis> instance is being altered.
 			</para>
 			<para>
 				The context of this variable is only limited to the current

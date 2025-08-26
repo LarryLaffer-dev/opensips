@@ -49,6 +49,7 @@
 #define IPSEC_CTX_TM_PUT(t, ctx) tm_ipsec.t_ctx_put_ptr(t, ipsec_ctx_tm_idx, ctx)
 
 
+extern int is_tcp_main;
 static int ipsec_default_client_port = 0;
 static int ipsec_default_server_port = 0;
 static str ipsec_allowed_algorithms;
@@ -61,6 +62,7 @@ static int mod_init(void);
 static void mod_destroy(void);
 static int proto_ipsec_init(struct proto_info *pi);
 static int proto_ipsec_init_listener(struct socket_info *si);
+static int proto_ipsec_bind_listener(struct socket_info *si);
 static int proto_ipsec_send(const struct socket_info* source,
 		char* buf, unsigned int len, const union sockaddr_union* to,
 		unsigned int id);
@@ -349,6 +351,7 @@ static int proto_ipsec_init(struct proto_info *pi)
 	pi->default_port		= ipsec_port;
 
 	pi->tran.init_listener	= proto_ipsec_init_listener;
+	pi->tran.bind_listener	= proto_ipsec_bind_listener;
 	pi->tran.dst_attr		= tcp_conn_fcntl;
 	pi->tran.send			= proto_ipsec_send;
 
@@ -377,6 +380,19 @@ static int proto_ipsec_init_listener(struct socket_info *si)
 	si->socket = -1;
 	/* re-initialize as UDP now */
 	return udp_init_listener(si, O_NONBLOCK);
+}
+
+static int proto_ipsec_bind_listener(struct socket_info *si)
+{
+	int socket = si->socket; /* backup socket */
+	if (udp_bind_listener(si) < 0)
+		return -1;
+	if (is_tcp_main) {
+		if (tcp_bind_listener(si) < 0)
+			return -1;
+		si->socket = socket;
+	}
+	return 0;
 }
 
 static int proto_ipsec_send(const struct socket_info* source,

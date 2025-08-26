@@ -1847,6 +1847,8 @@ int _b2b_send_reply(b2b_dlg_t* dlg, b2b_rpl_data_t* rpl_data)
 			LM_DBG("Reset transaction- send final reply [%p], uas_tran=0\n", dlg);
 			if(sip_method == METHOD_UPDATE)
 				dlg->update_tran = NULL;
+			else if (sip_method == METHOD_PRACK)
+				dlg->prack_tran = NULL;
 			else
 				dlg->uas_tran = NULL;
 		}
@@ -2776,6 +2778,7 @@ int b2b_send_req(b2b_dlg_t* dlg, enum b2b_entity_type etype,
 }
 
 static struct sip_msg dummy_msg;
+static struct hdr_field callid_hdr, from_hdr, to_hdr;
 
 static int build_extra_headers_from_msg(str buf, str *extra_hdr,
 													str *new_hdrs, str *body)
@@ -2890,7 +2893,6 @@ void b2b_tm_cback(struct cell *t, b2b_table htable, struct tmcb_params *ps)
 	struct hdr_field cseq;
 	enum b2b_entity_type etype=(htable==server_htable?B2B_SERVER:B2B_CLIENT);
 	int dlg_based_search = 0;
-	struct hdr_field callid_hdr, from_hdr, to_hdr;
 	struct to_body to_hdr_parsed, from_hdr_parsed;
 	int dlg_state = 0, prev_state = B2B_UNDEFINED;
 	struct uac_credential* crd;

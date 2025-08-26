@@ -243,13 +243,17 @@ int trans_init_all_listeners(void)
 						protos[i].name );
 					return -1;
 				}
+				/* for UDP based protocols, we also bind them */
+				if (is_udp_based_proto(si->proto)) {
+					if (protos[i].tran.bind_listener && protos[i].tran.bind_listener(si)<0) {
+						LM_ERR("failed to bind listener [%.*s], proto %s\n",
+							si->name.len, si->name.s,
+							protos[i].name );
+						return -1;
+					}
+				}
 				/* set first IPv4 and IPv6 listeners for this proto */
-				if ((si->address.af==AF_INET) &&
-				(!protos[i].sendipv4 || (protos[i].sendipv4->flags&SI_IS_LO)))
-					protos[i].sendipv4=si;
-				if ((si->address.af==AF_INET6) &&
-				(!protos[i].sendipv6 || (protos[i].sendipv6->flags&SI_IS_LO)))
-					protos[i].sendipv6=si;
+				update_default_socket_info(si);
 			}
 
 	return 0;
