@@ -2359,7 +2359,9 @@ static int dict_avp_enc_hex(cJSON *obj, struct dict_avp_data *avp, int _, str *r
 
 	if ((obj->type & cJSON_String) == 0)
 		return 1; /* encode it as it is */
+	LM_ERR("Converting hex string %s to binary\n", obj->valuestring);
 	len = strlen(obj->valuestring);
+	
 	buf = pkg_malloc(len/2);
 	if (!buf) {
 		LM_ERR("oom for hex encoding\n");
@@ -2369,7 +2371,7 @@ static int dict_avp_enc_hex(cJSON *obj, struct dict_avp_data *avp, int _, str *r
 	if (len < 0)
 		goto error;
 	ret->s = buf;
-	ret->len = len/2;
+	ret->len = len;
 	return 0;
 error:
 	pkg_free(buf);
