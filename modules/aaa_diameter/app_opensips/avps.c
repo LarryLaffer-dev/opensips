@@ -56,7 +56,6 @@ extern int dm_store_enumval(const char *name, int value);
 #define LOG_ERROR fd_log_error
 #endif
 
-
 #define STR_L(s) s, strlen(s)
 #define avp_type2str(t) ( \
 	t == AVP_TYPE_OCTETSTRING ? "string" : \
@@ -878,8 +877,10 @@ int parse_command_def(char *line, FILE *fp, int cmd_type)
 	unsigned int cmd_code = -1;
 	char *p = line, cmd_name[128 + 1], *bkp, *newp;
 	size_t buflen = strlen(line);
-	int i, len = buflen, cmd_name_len = -1, avp_count = 0;
+	size_t len = buflen;
+	int i, cmd_name_len = -1, avp_count = 0;
 	struct dm_avp_def avps[128];
+	ssize_t read;
 
 	switch (cmd_type) {
 	case CMD_REQUEST:
@@ -926,15 +927,18 @@ int parse_command_def(char *line, FILE *fp, int cmd_type)
 	cmd_name[cmd_name_len] = '\0';
 
 	LOG_DBG("parsed Cmd-Code %d (%s)\n", cmd_code, cmd_name);
-
-	while (getline(&line, &buflen, fp) >= 0) {
+	free(line);
+	line = NULL;
+	len = 0;
+	while ((read = getline(&line, &len, fp)) != -1) {
+		LOG_ERROR("parsing line: %.*s (len=%zu, read=%i)", (int)len, line, len, (int)read);
 		p = line;
 		len = strlen(p);
 
 		while (isspace(*p)) { p++; len--; }
 
 		if (*p == '{')
-			continue;
+			goto next;
 
 		if (*p == '}' || !strlen(p))
 			goto define_req;
@@ -948,10 +952,16 @@ int parse_command_def(char *line, FILE *fp, int cmd_type)
 			LOG_ERROR("failed to parse Command AVP line: '%s'\n", line);
 			return -1;
 		}
+next:
+		free(line);
+		line = NULL;
+		len = 0;
+
+		// unknown line... ignoring		
 	}
 
 define_req:
-	LOG_DBG("defining request (%d AVPs in total)...\n", avp_count);
+	LOG_ERROR("defining request (%d AVPs in total)...\n", avp_count);
 
 	struct dict_cmd_data req_data = {
 			cmd_code,
@@ -1039,6 +1049,7 @@ int parse_extra_avps(const char *extra_avps_file)
 		return -1;
 
 	while ((read = getline(&line, &len, fp)) != -1) {
+		LOG_ERROR("parsing line: %.*s (len=%zu, read=%zu)", (int)len - 1, line, len, read);
 		char *p = line;
 
 		while (isspace(*p))
@@ -1046,14 +1057,14 @@ int parse_extra_avps(const char *extra_avps_file)
 
 		// comment or empty line
 		if (*p == '#' || p - line >= read)
-			continue;
+			goto next;
 
 		rc = parse_app_vendor(p, fp);
 		if (rc < 0) {
 			ret = -1;
 			goto out;
 		} else if (rc == 0) {
-			continue;
+			goto next;
 		}
 
 		rc = parse_attr_def(p, fp);
@@ -1061,7 +1072,7 @@ int parse_extra_avps(const char *extra_avps_file)
 			ret = -1;
 			goto out;
 		} else if (rc == 0) {
-			continue;
+			goto next;
 		}
 
 		rc = parse_app_def(p, fp);
@@ -1069,7 +1080,7 @@ int parse_extra_avps(const char *extra_avps_file)
 			ret = -1;
 			goto out;
 		} else if (rc == 0) {
-			continue;
+			goto next;
 		}
 
 		rc = parse_command_def(p, fp, CMD_REQUEST);
@@ -1078,7 +1089,7 @@ int parse_extra_avps(const char *extra_avps_file)
 			goto out;
 		} else if (rc == 0) {
 			answers_needed++;
-			continue;
+			goto next;
 		}
 
 		rc = parse_command_def(p, fp, CMD_ANSWER);
@@ -1087,8 +1098,12 @@ int parse_extra_avps(const char *extra_avps_file)
 			goto out;
 		} else if (rc == 0) {
 			answers_needed--;
-			continue;
+			goto next;
 		}
+next:
+		free(line);
+		line = NULL;
+		len = 0;
 
 		// unknown line... ignoring
 	}
@@ -1101,7 +1116,7 @@ int parse_extra_avps(const char *extra_avps_file)
 
 out:
 	fclose(fp);
-	free(line);
+	// free(line);
 
 	return ret;
 }
