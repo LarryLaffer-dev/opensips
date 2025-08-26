@@ -9,6 +9,7 @@ RUN /usr/sbin/build-deb.sh
 FROM debian:bookworm
 COPY --from=builder /tmp/deb/ /tmp/debs/
 RUN export DEBIAN_FRONTEND=noninteractive && \
+apt-get update && apt-get install -y wget gnupg2 ca-certificates && \
 dpkg -i /tmp/debs/*.deb || true && \
 apt-key adv --fetch-keys https://apt.opensips.org/pubkey.gpg && \
 echo "deb https://apt.opensips.org bookworm cli-nightly" >/etc/apt/sources.list.d/opensips-cli.list && \
