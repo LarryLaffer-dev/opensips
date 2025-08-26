@@ -561,7 +561,7 @@ int parse_attr_def(char *line, FILE *fp)
 	unsigned int vendor_id = -1;
 	size_t buflen = strlen(line);
 	int i, len = buflen, attr_len = strlen("ATTRIBUTE"), name_len, avp_code;
-	char *name, *nt_name, *newp, *p = line, *end = p + len;
+	char *name, *nt_name = NULL, *newp, *p = line, *end = p + len;
 	enum dict_avp_basetype avp_type;
 	enum dict_avp_enc_type enc_type = AVP_ENC_TYPE_NONE;
 
@@ -725,7 +725,8 @@ create_avp:;
 	LOG_DBG("registered custom AVP (%s, code %d, type %s, enc %s, sub-avps: %d, vendor: %d)\n",
 			nt_name, avp_code, avp_type2str(avp_type), enc_type2str(enc_type), avp_count, vendor_id);
 
-	free(nt_name);
+	if (nt_name)
+		free(nt_name);
 	return 0;
 error:
 	LOG_ERROR("failed to parse line: %s\n", line);

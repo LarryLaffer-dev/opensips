@@ -538,6 +538,7 @@ static int dm_receive_req(struct msg **_req, struct avp * avp, struct session * 
 	struct msg_hdr *hdr = NULL;
 	str tid = STR_NULL, avp_arr = STR_NULL;
 
+	/* Request lock for inbound requests */
 	lock_get(&dm_inbound_req_lk);
 
 	FD_CHECK(fd_msg_hdr(req, &hdr));
@@ -607,6 +608,7 @@ out:
 	cJSON_Delete(avps);
 	cJSON_InitHooks(NULL);
 
+	/* Release lock */
 	lock_release(&dm_inbound_req_lk);
 
 	*_req = NULL;
