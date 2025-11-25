@@ -398,7 +398,7 @@ static int srec_b2b_notify(struct sip_msg *msg, str *key, int type,
 		goto no_recording;
 	}
 
-	if (ss->ctx->dlg->state > DLG_STATE_DELETED) {
+	if (ss->ctx->dlg->state >= DLG_STATE_DELETED) {
 		LM_ERR("dialog already in deleted state!\n");
 		goto no_recording;
 	}
@@ -429,7 +429,11 @@ no_recording:
 			LM_ERR("Cannot send bye for recording session with key %.*s\n",
 					req.b2b_key->len, req.b2b_key->s);
 	}
-	srec_rtp.copy_delete(ss->ctx->rtp, &ss->instance, &ss->media);
+	if (ss->ctx->dlg->state >= DLG_STATE_DELETED)
+		LM_DBG("rtp context already destroyed!\n");
+	else
+		srec_rtp.copy_delete(ss->ctx->rtp, &ss->instance, &ss->media);
+
 	if (ss->flags & SIPREC_STARTED)
 		raise_siprec_stop_event(ss);
 	srec_logic_destroy(ss, 0);
@@ -732,6 +736,7 @@ static void tm_update_recording(struct cell *t, int type, struct tmcb_params *ps
 void tm_start_recording(struct cell *t, int type, struct tmcb_params *ps)
 {
 	struct src_sess *ss;
+	str *body;
 
 	if (!is_invite(t))
 		return;
@@ -739,11 +744,17 @@ void tm_start_recording(struct cell *t, int type, struct tmcb_params *ps)
 	if (ps->code >= 300)
 		return;
 
+	body = get_body_part(ps->rpl, TYPE_APPLICATION, SUBTYPE_SDP);
+	if (body && body->len)
+		ss->flags |= SIPREC_ANSWERED;
+
 	SIPREC_LOCK(ss->ctx);
 	/* engage only on successful calls */
 	/* if session has been started, do not start it again */
 	if (ss->flags & SIPREC_STARTED)
 		LM_DBG("Session %p (%s) already started!\n", ss, ss->uuid);
+	else if ((ss->flags & SIPREC_ANSWERED) == 0)
+		LM_DBG("Session %p (%s) not answered yet!\n", ss, ss->uuid);
 	else if (src_start_recording(ps->rpl, ss) < 0)
 		LM_ERR("cannot start recording!\n");
 	SIPREC_UNLOCK(ss->ctx);

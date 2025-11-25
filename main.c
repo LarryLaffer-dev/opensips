@@ -224,11 +224,11 @@ static const struct main_script main_script[] = {
 	FN_HNDLR(init_dset, !=, 0, "SIP forking logic"),
 	FN_HNDLR(init_db_support, !=, 0, "SQL database support"),
 	FN_HNDLR(init_cdb_support, !=, 0, "CacheDB support"),
+	FN_HNDLR(init_pvar_support, !=, 0, "pseudo-variable support"),
 	FN_HNDLR(init_modules, !=, 0, "modules"),
 	FN_HNDLR(init_auto_scaling, !=, 0, "auto-scaling support"),
 	FN_HNDLR(init_xlog, <, 0, "xlog"),
 	FN_HNDLR(register_route_timers, <, 0, "route_timers"),
-	FN_HNDLR(init_pvar_support, !=, 0, "pseudo-variable support"),
 	FN_HNDLR(init_multi_proc_support, !=, 0, "multi processes support"),
 	FN_HNDLR(init_extra_avps, !=, 0, "avps"),
 	FN_HNDLR(fix_rls, !=, 0, "routing lists"),
@@ -407,7 +407,7 @@ int main(int argc, char** argv)
 	/* process pkg mem size from command line */
 	opterr=0;
 
-	options="A:f:cCm:M:b:l:n:N:rRvdDFEVhw:t:u:g:p:P:G:W:o:a:k:s:"
+	options="A:f:cCm:M:b:l:n:N:irRvdDFEVhw:t:u:g:p:P:G:W:o:a:k:s:"
 #ifdef UNIT_TESTS
 	"T:"
 #endif
@@ -518,6 +518,9 @@ int main(int argc, char** argv)
 			case 's':
 			case 'e':
 					/* ignoring, parsed previously */
+					break;
+			case 'i':
+					modload_check_rev = 0;
 					break;
 			case 'b':
 					maxbuffer=strtol(optarg, &tmp, 10);
