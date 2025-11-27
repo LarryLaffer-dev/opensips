@@ -729,7 +729,8 @@ create_avp:;
 	LOG_DBG("registered custom AVP (%s, code %d, type %s, enc %s, sub-avps: %d, vendor: %d)\n",
 			nt_name, avp_code, avp_type2str(avp_type), enc_type2str(enc_type), avp_count, vendor_id);
 
-	free(nt_name);
+	if (nt_name)
+		free(nt_name);
 	return 0;
 error:
 	LOG_ERROR("failed to parse line: %s\n", line);
@@ -889,7 +890,9 @@ int parse_command_def(char *line, FILE *fp, int cmd_type)
 	unsigned int cmd_code = -1;
 	char *p = line, cmd_name[128 + 1], *bkp, *newp;
 	size_t buflen = strlen(line);
-	int i, len = buflen, cmd_name_len = -1, avp_count = 0;
+	size_t len = buflen;
+	ssize_t read;
+	int i, cmd_name_len = -1, avp_count = 0;
 	struct dm_avp_def avps[128];
 
 	switch (cmd_type) {
@@ -938,14 +941,17 @@ int parse_command_def(char *line, FILE *fp, int cmd_type)
 
 	LOG_DBG("parsed Cmd-Code %d (%s)\n", cmd_code, cmd_name);
 
-	while (getline(&line, &buflen, fp) >= 0) {
+	free(line);
+	line = NULL;
+	len = 0;
+	while ((read = getline(&line, &buflen, fp)) >= 0) {
 		p = line;
 		len = strlen(p);
 
 		while (isspace(*p)) { p++; len--; }
 
 		if (*p == '{')
-			continue;
+			goto next;
 
 		if (*p == '}' || !strlen(p))
 			goto define_req;
@@ -959,6 +965,10 @@ int parse_command_def(char *line, FILE *fp, int cmd_type)
 			LOG_ERROR("failed to parse Command AVP line: '%s'\n", line);
 			return -1;
 		}
+next:
+		free(line);
+		line = NULL;
+		len = 0;
 	}
 
 define_req:
@@ -1057,14 +1067,14 @@ int parse_extra_avps(const char *extra_avps_file)
 
 		// comment or empty line
 		if (*p == '#' || p - line >= read)
-			continue;
+			goto next;
 
 		rc = parse_app_vendor(p, fp);
 		if (rc < 0) {
 			ret = -1;
 			goto out;
 		} else if (rc == 0) {
-			continue;
+			goto next;
 		}
 
 		rc = parse_attr_def(p, fp);
@@ -1072,7 +1082,7 @@ int parse_extra_avps(const char *extra_avps_file)
 			ret = -1;
 			goto out;
 		} else if (rc == 0) {
-			continue;
+			goto next;
 		}
 
 		rc = parse_app_def(p, fp);
@@ -1080,7 +1090,7 @@ int parse_extra_avps(const char *extra_avps_file)
 			ret = -1;
 			goto out;
 		} else if (rc == 0) {
-			continue;
+			goto next;
 		}
 
 		rc = parse_command_def(p, fp, CMD_REQUEST);
@@ -1089,7 +1099,7 @@ int parse_extra_avps(const char *extra_avps_file)
 			goto out;
 		} else if (rc == 0) {
 			answers_needed++;
-			continue;
+			goto next;
 		}
 
 		rc = parse_command_def(p, fp, CMD_ANSWER);
@@ -1100,6 +1110,11 @@ int parse_extra_avps(const char *extra_avps_file)
 			answers_needed--;
 			continue;
 		}
+
+	next:
+		free(line);
+		line = NULL;
+		len = 0;
 
 		// unknown line... ignoring
 	}
@@ -1112,7 +1127,6 @@ int parse_extra_avps(const char *extra_avps_file)
 
 out:
 	fclose(fp);
-	free(line);
 
 	return ret;
 }
