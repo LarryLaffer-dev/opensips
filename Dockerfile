@@ -14,7 +14,7 @@ dpkg -i /tmp/debs/*.deb || true && \
 apt-key adv --fetch-keys https://apt.opensips.org/pubkey.gpg && \
 echo "deb https://apt.opensips.org bookworm cli-nightly" >/etc/apt/sources.list.d/opensips-cli.list && \
 apt-get update && apt-get -f -y install && \
-apt-get -y install gnupg2 ca-certificates iproute2 mariadb-client gettext-base gdb opensips-cli sngrep && \
+apt-get -y install gnupg2 ca-certificates iproute2 mariadb-client gettext-base gdb opensips-cli sngrep sofia-sip-bin ngrep tcpdump && \
 apt-get autoremove --purge -y && \
 apt-get clean && \
 rm -rf /var/lib/apt/lists/*

@@ -1,0 +1,19 @@
+#!/bin/bash
+VERSION_GIT=$(head -1 < VERSION)
+REGION="europe-west3"                  # Frankfurt (good for Germany)
+ZONE="${REGION}-a"
+REPO="apps"   # pick a short name
+PROJECT_ID="empyrean-verve-464510-p1"
+
+IMAGE="opensips"
+TAG="latest"
+AR_PATH="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/${IMAGE}:${TAG}"
+AR_PATH_VERSIONED="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/${IMAGE}:${VERSION_GIT}"
+
+echo "Building version $VERSION_GIT"
+echo "Pushing to $AR_PATH and $AR_PATH_VERSIONED"
+docker build -t "${AR_PATH}" -f Dockerfile .
+docker push "${AR_PATH}"
+docker tag "${AR_PATH}" "${AR_PATH_VERSIONED}"
+echo "Pushing to $AR_PATH and $AR_PATH_VERSIONED"
+docker push "${AR_PATH_VERSIONED}"
