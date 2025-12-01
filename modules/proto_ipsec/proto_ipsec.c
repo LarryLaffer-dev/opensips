@@ -75,6 +75,24 @@ static int ipsec_nat_traversal = 0;
 
 /* Exported for ipsec_algo.c to check NAT-T support in Security-Client parsing */
 int ipsec_nat_traversal_enabled = 0;
+
+/*
+ * Hardware Offload support for IPSec
+ *
+ * When hw_offload_interface is set to a network interface name,
+ * the module will attempt to offload ESP processing to the NIC hardware.
+ *
+ * Supported NICs include:
+ * - Mellanox/NVIDIA ConnectX-6 Dx and later
+ * - Intel QuickAssist Technology (QAT)
+ * - Marvell OCTEON
+ *
+ * If hardware offload fails (unsupported NIC, resource exhaustion),
+ * the module automatically falls back to software processing.
+ *
+ * Default: NULL (disabled)
+ */
+static char *ipsec_hw_offload_interface = NULL;
 static int mod_init(void);
 static void mod_destroy(void);
 static int proto_ipsec_init(struct proto_info *pi);
@@ -165,6 +183,12 @@ static const param_export_t params[] = {
 	 * 1 = enabled: mod=UDP-enc-tun accepted, UDP encapsulation used
 	 */
 	{ "nat_traversal",					INT_PARAM, &ipsec_nat_traversal },
+	/*
+	 * Hardware Offload - offload ESP processing to NIC hardware
+	 * Set to interface name (e.g., "eth0", "ens192") to enable.
+	 * Falls back to software if hardware offload fails.
+	 */
+	{ "hw_offload_interface",			STR_PARAM, &ipsec_hw_offload_interface },
 	{0, 0, 0}
 };
 
@@ -298,6 +322,14 @@ static int mod_init(void)
 	ipsec_nat_traversal_enabled = ipsec_nat_traversal;
 	if (ipsec_nat_traversal)
 		LM_INFO("NAT Traversal (NAT-T) support enabled per 3GPP TS 33.203 Annex M\n");
+
+	/* Initialize hardware offload if configured */
+	if (ipsec_hw_offload_interface && ipsec_hw_offload_interface[0]) {
+		if (ipsec_hw_offload_init(ipsec_hw_offload_interface) < 0) {
+			LM_WARN("Hardware offload initialization failed, continuing with software processing\n");
+			/* Don't fail - just continue without hardware offload */
+		}
+	}
 
 	if (ipsec_tmp_timeout <= 0) {
 		LM_ERR("invalid temporary timeout value %d - positive value required\n",
