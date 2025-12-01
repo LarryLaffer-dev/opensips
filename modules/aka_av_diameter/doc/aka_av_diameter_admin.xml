@@ -134,7 +134,22 @@ modparam("aka_av_diameter", "server_uri", "sip:scscf.ims.mnc001.mcc001.3gppnetwo
 		</programlisting>
 		</example>
 	</section>
-
+	<section id="param_origin_host" xreflabel="Origin-Host">
+		<title><varname>origin_host</varname> (string)</title>
+		<para>
+		The Origin-Host used in the Diameter commands.
+		</para>
+		<para>
+		Default value is <quote>scscf.diameter.test</quote>.
+		</para>	
+		<example>
+		<title><varname>origin_host</varname> parameter usage</title>
+		<programlisting format="linespecific">
+		
+modparam("aka_av_diameter", "origin_host", "scscf.ims.mnc001.mcc001.3gppnetwork.org")
+		</programlisting>
+		</example>
+	</section>
 
 	</section>
 
