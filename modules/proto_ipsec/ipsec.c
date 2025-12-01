@@ -21,6 +21,7 @@
 
 #define _ISOC11_SOURCE /* fix static_assert on older OSes */
 #include <assert.h>
+#include <net/if.h>  /* for if_nametoindex */
 
 #include "ipsec.h"
 #include "ipsec_user.h"
@@ -407,8 +408,80 @@ static_assert(sizeof(struct xfrm_algo_osips) == sizeof(struct xfrm_algo)
 #define UDP_ENCAP_ESPINUDP 2  /* RFC 3948 */
 #endif
 
-int ipsec_sa_add(struct mnl_socket *sock, struct ipsec_ctx *ctx,
-		enum ipsec_dir dir, int client)
+/*
+ * Hardware Offload support for IPSec
+ *
+ * Modern NICs can offload ESP processing to hardware:
+ * - Mellanox/NVIDIA ConnectX-6 Dx and later
+ * - Intel QuickAssist Technology (QAT)
+ * - Marvell OCTEON
+ *
+ * When hw_offload_interface is configured, the module will:
+ * 1. Try to create SA with XFRMA_OFFLOAD_DEV attribute
+ * 2. If hardware offload fails, fall back to software processing
+ *
+ * XFRM_OFFLOAD_PACKET: Full packet offload (crypto + encap)
+ * XFRM_OFFLOAD_INBOUND: Offload inbound direction
+ */
+#ifndef XFRM_OFFLOAD_INBOUND
+#define XFRM_OFFLOAD_INBOUND 1
+#endif
+#ifndef XFRM_OFFLOAD_PACKET
+#define XFRM_OFFLOAD_PACKET 2
+#endif
+
+/* Hardware offload state */
+int ipsec_hw_offload_ifindex = 0;   /* 0 = disabled */
+int ipsec_hw_offload_enabled = 0;   /* Runtime flag */
+
+/*
+ * Initialize hardware offload by resolving interface name to index
+ * Returns: 0 on success, -1 on error
+ */
+int ipsec_hw_offload_init(const char *ifname)
+{
+	unsigned int ifindex;
+
+	if (!ifname || !ifname[0]) {
+		ipsec_hw_offload_ifindex = 0;
+		ipsec_hw_offload_enabled = 0;
+		return 0;
+	}
+
+	ifindex = if_nametoindex(ifname);
+	if (ifindex == 0) {
+		LM_ERR("Hardware offload: interface '%s' not found: %s\n",
+				ifname, strerror(errno));
+		return -1;
+	}
+
+	ipsec_hw_offload_ifindex = ifindex;
+	ipsec_hw_offload_enabled = 1;
+	LM_INFO("Hardware offload enabled on interface '%s' (index %u)\n",
+			ifname, ifindex);
+	return 0;
+}
+
+/*
+ * Structure for XFRM hardware offload (xfrm_user_offload)
+ * This is defined in linux/xfrm.h but may not be available on older kernels
+ */
+#ifndef XFRMA_OFFLOAD_DEV
+#define XFRMA_OFFLOAD_DEV 26
+#endif
+
+struct xfrm_user_offload_osips {
+	int ifindex;
+	__u8 flags;
+};
+
+/*
+ * Internal SA add function with optional hardware offload
+ * Parameter use_hw_offload: 1 = try hardware offload, 0 = software only
+ * Returns: 0 on success, -1 on error
+ */
+static int _ipsec_sa_add(struct mnl_socket *sock, struct ipsec_ctx *ctx,
+		enum ipsec_dir dir, int client, int use_hw_offload)
 {
 	char buf[MNL_SOCKET_BUFFER_SIZE];
 	struct nlmsghdr *nlh;
@@ -417,6 +490,7 @@ int ipsec_sa_add(struct mnl_socket *sock, struct ipsec_ctx *ctx,
 	struct xfrm_algo_osips ia, ie;
 	struct xfrm_user_tmpl tmpl;
 	struct xfrm_encap_tmpl encap;
+	struct xfrm_user_offload_osips offload;
 	unsigned short dst_port;
 	unsigned short src_port;
 	unsigned int spi;
@@ -562,6 +636,25 @@ int ipsec_sa_add(struct mnl_socket *sock, struct ipsec_ctx *ctx,
 		LM_DBG("NAT-T encapsulation: sport=%hu dport=%hu\n", src_port, dst_port);
 	}
 
+	/*
+	 * Hardware Offload (XFRMA_OFFLOAD_DEV)
+	 * If enabled, request the kernel to offload ESP processing to the NIC.
+	 * Supported by: Mellanox ConnectX-6 Dx+, Intel QAT, etc.
+	 */
+	if (use_hw_offload && ipsec_hw_offload_ifindex > 0) {
+		memset(&offload, 0, sizeof(offload));
+		offload.ifindex = ipsec_hw_offload_ifindex;
+		/* XFRM_OFFLOAD_PACKET: full packet offload (crypto + encap)
+		 * XFRM_OFFLOAD_INBOUND: set for inbound direction */
+		offload.flags = XFRM_OFFLOAD_PACKET;
+		if (dir == IPSEC_POLICY_IN)
+			offload.flags |= XFRM_OFFLOAD_INBOUND;
+		mnl_attr_put(nlh, XFRMA_OFFLOAD_DEV, sizeof(offload), &offload);
+		LM_DBG("Hardware offload requested on ifindex %d, dir=%s\n",
+				ipsec_hw_offload_ifindex,
+				(dir == IPSEC_POLICY_IN) ? "IN" : "OUT");
+	}
+
 	if (mnl_socket_sendto(sock, nlh, nlh->nlmsg_len) < 0) {
 		LM_ERR("communicating with kernel for new SA: %s\n", strerror(errno));
 		goto error;
@@ -619,15 +712,47 @@ int ipsec_sa_add(struct mnl_socket *sock, struct ipsec_ctx *ctx,
 		goto policy_error;
 	}
 
-	LM_DBG("created %s:%hu -> %s:%hu SA (SPI %u)\n",
-			ip_addr2a(&src->ip), src_port, ip_addr2a(&dst->ip), dst_port, spi);
+	LM_DBG("created %s:%hu -> %s:%hu SA (SPI %u)%s\n",
+			ip_addr2a(&src->ip), src_port, ip_addr2a(&dst->ip), dst_port, spi,
+			(use_hw_offload && ipsec_hw_offload_ifindex > 0) ? " [HW offload]" : "");
 	return 0;
 policy_error:
 	ipsec_sa_rm(sock, ctx, dir, client);
 error:
-	LM_ERR("failed to create %s:%hu -> %s:%hu SA (SPI %u)\n",
-			ip_addr2a(&src->ip), src_port, ip_addr2a(&dst->ip), dst_port, spi);
+	LM_ERR("failed to create %s:%hu -> %s:%hu SA (SPI %u)%s\n",
+			ip_addr2a(&src->ip), src_port, ip_addr2a(&dst->ip), dst_port, spi,
+			(use_hw_offload && ipsec_hw_offload_ifindex > 0) ? " [HW offload]" : "");
 	return -1;
+}
+
+/*
+ * Public SA add function with automatic hardware offload fallback
+ *
+ * If hardware offload is enabled (hw_offload_interface configured):
+ * 1. First attempts to create SA with hardware offload
+ * 2. If that fails, falls back to software-only SA
+ *
+ * This ensures compatibility with NICs that don't support offload
+ * or when offload resources are exhausted.
+ */
+int ipsec_sa_add(struct mnl_socket *sock, struct ipsec_ctx *ctx,
+		enum ipsec_dir dir, int client)
+{
+	int ret;
+
+	/* If hardware offload is enabled, try it first */
+	if (ipsec_hw_offload_enabled && ipsec_hw_offload_ifindex > 0) {
+		ret = _ipsec_sa_add(sock, ctx, dir, client, 1);
+		if (ret == 0) {
+			return 0;  /* Hardware offload succeeded */
+		}
+
+		/* Hardware offload failed, try software fallback */
+		LM_WARN("Hardware offload failed for SA, falling back to software processing\n");
+	}
+
+	/* Software-only SA (no offload) */
+	return _ipsec_sa_add(sock, ctx, dir, client, 0);
 }
 
 /*

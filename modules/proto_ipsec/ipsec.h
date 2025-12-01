@@ -55,6 +55,17 @@ enum ipsec_mode {
 /* NAT-T encapsulation port (RFC 3948) */
 #define IPSEC_NAT_T_PORT 4500
 
+/*
+ * Hardware Offload support for IPSec
+ * Modern NICs (e.g., Mellanox ConnectX, Intel QAT) can offload
+ * ESP encryption/decryption to hardware for better performance.
+ */
+extern int ipsec_hw_offload_ifindex;  /* Interface index for HW offload, 0 = disabled */
+extern int ipsec_hw_offload_enabled;  /* Runtime flag if offload is active */
+
+/* Initialize hardware offload (resolve interface name to index) */
+int ipsec_hw_offload_init(const char *ifname);
+
 #define VALID_IPSEC_STATE(_s) \
 	((_s) == IPSEC_STATE_TMP || \
 	 (_s) == IPSEC_STATE_OK)
@@ -145,7 +156,6 @@ void ipsec_ctx_release_tmp_user(struct ipsec_user *user);
 void ipsec_ctx_release_user(struct ipsec_ctx *ctx);
 void ipsec_ctx_release(struct ipsec_ctx *ctx);
 int ipsec_ctx_release_unsafe(struct ipsec_ctx *ctx);
-void ipsec_ctx_add_tmp(struct ipsec_ctx *ctx);
 void ipsec_ctx_remove_tmp(struct ipsec_ctx *ctx);
 void ipsec_ctx_remove_free_tmp(struct ipsec_ctx *ctx, int _free);
 void ipsec_ctx_extend_tmp(struct ipsec_ctx *ctx);
