@@ -19,9 +19,26 @@
  *
  */
 
-#define _ISOC11_SOURCE /* fix static_assert on older OSes */
+#define _GNU_SOURCE       /* for SO_REUSEPORT */
+#define _ISOC11_SOURCE    /* fix static_assert on older OSes */
 #include <assert.h>
-#include <net/if.h>  /* for if_nametoindex */
+#include <unistd.h>       /* for close() */
+#include <net/if.h>       /* for if_nametoindex */
+#include <sys/socket.h>   /* for socket operations */
+#include <netinet/in.h>   /* for sockaddr_in */
+
+/* UDP_ENCAP constants - avoid including conflicting headers */
+#ifndef UDP_ENCAP
+#define UDP_ENCAP 100
+#endif
+#ifndef UDP_ENCAP_ESPINUDP
+#define UDP_ENCAP_ESPINUDP 2  /* RFC 3948 */
+#endif
+
+/* SO_REUSEPORT may not be defined on all systems */
+#ifndef SO_REUSEPORT
+#define SO_REUSEPORT 15
+#endif
 
 #include "ipsec.h"
 #include "ipsec_user.h"
@@ -252,6 +269,12 @@ int ipsec_init(void)
 		return -1;
 	}
 
+	/* Initialize NAT-T encap socket subsystem */
+	if (ipsec_encap_init() < 0) {
+		LM_ERR("could not initialize NAT-T encap socket subsystem\n");
+		return -1;
+	}
+
 	if (register_timer("IPSec timer", ipsec_ctx_timer, NULL, 1,
 			TIMER_FLAG_SKIP_ON_DELAY)<0 ) {
 		LM_ERR("failed to register timer, halting...");
@@ -270,6 +293,217 @@ void ipsec_destroy(void)
 	if (ipsec_spi_lock)
 		lock_destroy(ipsec_spi_lock);
 	shm_free(ipsec_spi_map);
+	/* Cleanup NAT-T encap sockets */
+	ipsec_encap_destroy();
+}
+
+/*
+ * NAT-T UDP Encapsulation Sockets
+ *
+ * For NAT Traversal (mod=UDP-enc-tun), the kernel needs UDP sockets
+ * configured with UDP_ENCAP option to handle ESP-in-UDP encapsulation.
+ *
+ * These sockets are separate from the SIP sockets and are only used
+ * by the kernel for ESP packet encapsulation/decapsulation.
+ */
+
+static struct ipsec_encap_socket *ipsec_encap_sockets = NULL;
+static gen_lock_t *ipsec_encap_lock = NULL;
+
+int ipsec_encap_init(void)
+{
+	ipsec_encap_lock = lock_alloc();
+	if (!ipsec_encap_lock || !lock_init(ipsec_encap_lock)) {
+		LM_ERR("could not allocate NAT-T encap socket lock\n");
+		return -1;
+	}
+	ipsec_encap_sockets = NULL;
+	LM_DBG("NAT-T encap socket subsystem initialized\n");
+	return 0;
+}
+
+void ipsec_encap_destroy(void)
+{
+	struct ipsec_encap_socket *es, *next;
+
+	if (!ipsec_encap_lock)
+		return;
+
+	lock_get(ipsec_encap_lock);
+	for (es = ipsec_encap_sockets; es; es = next) {
+		next = es->next;
+		if (es->fd >= 0) {
+			LM_DBG("Closing NAT-T encap socket fd=%d for %s:%hu\n",
+					es->fd, ip_addr2a(&es->ip), es->port);
+			close(es->fd);
+		}
+		shm_free(es);
+	}
+	ipsec_encap_sockets = NULL;
+	lock_release(ipsec_encap_lock);
+
+	lock_destroy(ipsec_encap_lock);
+	lock_dealloc(ipsec_encap_lock);
+	ipsec_encap_lock = NULL;
+}
+
+/*
+ * Create and configure a NAT-T encap UDP socket
+ * - Binds to IP:port with SO_REUSEPORT
+ * - Configures UDP_ENCAP option for ESP-in-UDP
+ */
+static int ipsec_encap_create_socket(struct ip_addr *ip, unsigned short port)
+{
+	int fd, opt, af;
+	union sockaddr_union su;
+
+	af = ip->af;
+
+	/* Create UDP socket */
+	fd = socket(af, SOCK_DGRAM, IPPROTO_UDP);
+	if (fd < 0) {
+		LM_ERR("Failed to create NAT-T encap socket: %s\n", strerror(errno));
+		return -1;
+	}
+
+	/* Enable SO_REUSEADDR */
+	opt = 1;
+	if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+		LM_WARN("Failed to set SO_REUSEADDR on encap socket: %s\n", strerror(errno));
+	}
+
+	/* Enable SO_REUSEPORT - critical for binding to same port as SIP socket */
+	opt = 1;
+	if (setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt)) < 0) {
+		LM_ERR("Failed to set SO_REUSEPORT on encap socket: %s\n", strerror(errno));
+		close(fd);
+		return -1;
+	}
+
+	/* Prepare sockaddr */
+	memset(&su, 0, sizeof(su));
+	if (af == AF_INET) {
+		su.sin.sin_family = AF_INET;
+		su.sin.sin_port = htons(port);
+		memcpy(&su.sin.sin_addr, ip->u.addr, ip->len);
+	} else if (af == AF_INET6) {
+		su.sin6.sin6_family = AF_INET6;
+		su.sin6.sin6_port = htons(port);
+		memcpy(&su.sin6.sin6_addr, ip->u.addr, ip->len);
+	} else {
+		LM_ERR("Unsupported address family %d\n", af);
+		close(fd);
+		return -1;
+	}
+
+	/* Bind socket */
+	if (bind(fd, &su.s, sockaddru_len(su)) < 0) {
+		LM_ERR("Failed to bind NAT-T encap socket to %s:%hu: %s\n",
+				ip_addr2a(ip), port, strerror(errno));
+		close(fd);
+		return -1;
+	}
+
+	/*
+	 * Configure UDP_ENCAP for ESP-in-UDP (RFC 3948)
+	 * This tells the kernel this socket handles ESP encapsulated packets
+	 */
+	opt = UDP_ENCAP_ESPINUDP;
+	if (setsockopt(fd, IPPROTO_UDP, UDP_ENCAP, &opt, sizeof(opt)) < 0) {
+		LM_ERR("Failed to set UDP_ENCAP on socket for %s:%hu: %s\n",
+				ip_addr2a(ip), port, strerror(errno));
+		LM_ERR("Make sure your kernel supports IPSec NAT-T (CONFIG_XFRM)\n");
+		close(fd);
+		return -1;
+	}
+
+	LM_INFO("Created NAT-T encap socket fd=%d for %s:%hu\n",
+			fd, ip_addr2a(ip), port);
+
+	return fd;
+}
+
+/*
+ * Get or create a NAT-T encap socket for the given IP:port
+ * Returns the socket fd, or -1 on error
+ */
+int ipsec_encap_get_socket(struct ip_addr *ip, unsigned short port)
+{
+	struct ipsec_encap_socket *es;
+	int fd;
+
+	if (!ipsec_encap_lock) {
+		LM_ERR("NAT-T encap subsystem not initialized\n");
+		return -1;
+	}
+
+	lock_get(ipsec_encap_lock);
+
+	/* Search for existing socket */
+	for (es = ipsec_encap_sockets; es; es = es->next) {
+		if (es->port == port && ip_addr_cmp(&es->ip, ip)) {
+			fd = es->fd;
+			lock_release(ipsec_encap_lock);
+			LM_DBG("Reusing NAT-T encap socket fd=%d for %s:%hu\n",
+					fd, ip_addr2a(ip), port);
+			return fd;
+		}
+	}
+
+	/* Create new socket */
+	fd = ipsec_encap_create_socket(ip, port);
+	if (fd < 0) {
+		lock_release(ipsec_encap_lock);
+		return -1;
+	}
+
+	/* Store in list */
+	es = shm_malloc(sizeof(*es));
+	if (!es) {
+		LM_ERR("Out of memory for encap socket entry\n");
+		close(fd);
+		lock_release(ipsec_encap_lock);
+		return -1;
+	}
+	memset(es, 0, sizeof(*es));
+	es->fd = fd;
+	memcpy(&es->ip, ip, sizeof(*ip));
+	es->port = port;
+	es->next = ipsec_encap_sockets;
+	ipsec_encap_sockets = es;
+
+	lock_release(ipsec_encap_lock);
+	return fd;
+}
+
+/*
+ * Hardware Offload support
+ */
+int ipsec_hw_offload_ifindex = 0;
+int ipsec_hw_offload_enabled = 0;
+
+int ipsec_hw_offload_init(const char *ifname)
+{
+	unsigned int ifindex;
+
+	if (!ifname || !ifname[0]) {
+		ipsec_hw_offload_ifindex = 0;
+		ipsec_hw_offload_enabled = 0;
+		return 0;
+	}
+
+	ifindex = if_nametoindex(ifname);
+	if (ifindex == 0) {
+		LM_ERR("Hardware offload: interface '%s' not found: %s\n",
+				ifname, strerror(errno));
+		return -1;
+	}
+
+	ipsec_hw_offload_ifindex = ifindex;
+	ipsec_hw_offload_enabled = 1;
+	LM_INFO("Hardware offload enabled on interface '%s' (index %u)\n",
+			ifname, ifindex);
+	return 0;
 }
 
 /*
@@ -404,9 +638,6 @@ static_assert(sizeof(struct xfrm_algo_osips) == sizeof(struct xfrm_algo)
  * - Tunnel mode is used instead of transport mode
  * - XFRMA_ENCAP attribute is added to the SA
  */
-#ifndef UDP_ENCAP_ESPINUDP
-#define UDP_ENCAP_ESPINUDP 2  /* RFC 3948 */
-#endif
 
 /*
  * Hardware Offload support for IPSec
@@ -625,15 +856,35 @@ static int _ipsec_sa_add(struct mnl_socket *sock, struct ipsec_ctx *ctx,
 	 * NAT-T UDP Encapsulation (3GPP TS 33.203 Annex M, RFC 3948)
 	 * When mod=UDP-enc-tun is negotiated, ESP packets are encapsulated
 	 * in UDP datagrams to traverse NAT devices.
+	 *
+	 * For NAT-T to work, the kernel needs:
+	 * 1. XFRMA_ENCAP attribute in the SA with encap type and ports
+	 * 2. A UDP socket bound to the local port with UDP_ENCAP option set
+	 *
+	 * We create separate UDP sockets (with SO_REUSEPORT) for ESP encap
+	 * that don't interfere with the regular SIP sockets.
 	 */
 	if (ctx->mode == IPSEC_MODE_UDP_ENCAP_TUNNEL) {
+		/*
+		 * Create encap socket for the local endpoint (receiver side)
+		 * For INBOUND: local is dst (our server/client port)
+		 * For OUTBOUND: we still need the socket on our port for responses
+		 */
+		int encap_fd = ipsec_encap_get_socket(&dst->ip, dst_port);
+		if (encap_fd < 0) {
+			LM_ERR("Failed to create NAT-T encap socket for %s:%hu\n",
+					ip_addr2a(&dst->ip), dst_port);
+			goto error;
+		}
+
 		memset(&encap, 0, sizeof(encap));
 		encap.encap_type = UDP_ENCAP_ESPINUDP;
 		encap.encap_sport = htons(src_port);
 		encap.encap_dport = htons(dst_port);
 		/* OA (Original Address) - set to zero, kernel fills if needed */
 		mnl_attr_put(nlh, XFRMA_ENCAP, sizeof(encap), &encap);
-		LM_DBG("NAT-T encapsulation: sport=%hu dport=%hu\n", src_port, dst_port);
+		LM_DBG("NAT-T encapsulation: sport=%hu dport=%hu (encap socket fd=%d)\n",
+				src_port, dst_port, encap_fd);
 	}
 
 	/*
