@@ -21,6 +21,8 @@ proto_ipsec Module
               1.3.6. default_server_port (integer)
               1.3.7. allowed_algorithms (string)
               1.3.8. disable_deprecated_algorithms (integer)
+              1.3.9. nat_traversal (integer)
+              1.3.10. hw_offload_interface (string)
 
         1.4. Exported Functions
 
@@ -58,9 +60,12 @@ proto_ipsec Module
    1.6. Set default_server_port parameter
    1.7. Set allowed_algorithms parameter
    1.8. Set disable_deprecated_algorithms parameter
-   1.9. ipsec_create() usage
-   1.10. $ipsec(field) usage
-   1.11. $ipsec_ue(field) usage
+   1.9. Set nat_traversal parameter
+   1.10. Set hw_offload_interface parameter
+   1.11. Verifying hardware offload capability
+   1.12. ipsec_create() usage
+   1.13. $ipsec(field) usage
+   1.14. $ipsec_ue(field) usage
 
 Chapter 1. Admin Guide
 
@@ -76,6 +81,14 @@ Chapter 1. Admin Guide
    specification (GSMA PRD IR.92) and implements the extensions
    defined in TS 33.203 (3G Security: Access Security for IP-based
    Services).
+
+   The module also supports IPSec NAT Traversal (NAT-T) as
+   specified in 3GPP TS 33.203 Annex M and TS 24.229. When NAT-T
+   is enabled, the module can accept and use the mod=UDP-enc-tun
+   mode in Security-Client headers, which encapsulates ESP packets
+   in UDP datagrams (as per RFC 3948) to traverse NAT devices.
+   This feature is optional and can be enabled via the
+   nat_traversal parameter.
 
    It allows creation of both UDP and TCP secure connections on
    the same IP:port pair, defined as sockets. Essentially, when
@@ -272,6 +285,90 @@ ac=aes-gcm")
 modparam("proto_ipsec", "disable_deprecated_algorithms", yes)
 ...
 
+1.3.9. nat_traversal (integer)
+
+   Enables or disables IPSec NAT Traversal (NAT-T) support
+   according to 3GPP TS 33.203 Annex M and TS 24.229.
+
+   When enabled (set to 1), the module will:
+     * Accept mod=UDP-enc-tun in Security-Client headers
+     * Use UDP encapsulation for ESP packets (RFC 3948) when NAT-T
+       mode is negotiated
+     * Use tunnel mode instead of transport mode for IPSec SAs
+     * Include mod=UDP-enc-tun in Security-Server headers when the
+       UE requests NAT-T mode
+
+   When disabled (set to 0, default), only mod=trans (standard
+   transport mode) is accepted in Security-Client headers.
+
+   Default value is 0 (disabled).
+
+   Example 1.9. Set nat_traversal parameter
+...
+# Enable NAT Traversal support for UEs behind NAT
+modparam("proto_ipsec", "nat_traversal", 1)
+...
+
+1.3.10. hw_offload_interface (string)
+
+   Enables hardware offload for IPSec ESP processing by specifying
+   the network interface to use for offloading.
+
+   Modern NICs can offload ESP encryption/decryption and integrity
+   checks to hardware, significantly improving performance and
+   reducing CPU load. Supported NICs include:
+     * Mellanox/NVIDIA ConnectX-6 Dx and later
+     * Intel QuickAssist Technology (QAT)
+     * Marvell OCTEON series
+
+   If hardware offload fails (unsupported NIC, driver issues, or
+   resource exhaustion), the module automatically falls back to
+   software processing. This ensures reliability while attempting
+   to leverage hardware acceleration when available.
+
+   How to find your interface name:
+
+   Use one of the following commands to list network interfaces
+   and their indices:
+# List all interfaces with their indices
+ip link show
+
+# Or using the traditional command
+ifconfig -a
+
+# Get interface index for a specific interface (e.g., eth0)
+cat /sys/class/net/eth0/ifindex
+
+# List interfaces that support IPSec offload (if supported)
+ethtool -k eth0 | grep esp
+
+   Prerequisites for hardware offload:
+     * NIC driver must support XFRM offload (check with ethtool -k
+       <interface> | grep esp)
+     * Linux kernel 4.19 or later with CONFIG_XFRM_OFFLOAD enabled
+     * The interface must be the one handling IPSec traffic
+
+   Default value is NULL (hardware offload disabled).
+
+   Example 1.10. Set hw_offload_interface parameter
+...
+# Enable hardware offload on interface eth0
+modparam("proto_ipsec", "hw_offload_interface", "eth0")
+
+# Or for a different interface name
+modparam("proto_ipsec", "hw_offload_interface", "ens192")
+...
+
+   Example 1.11. Verifying hardware offload capability
+# Check if your NIC supports IPSec offload
+$ ethtool -k eth0 | grep esp
+esp-hw-offload: on
+esp-tx-csum-hw-offload: on
+
+# If you see "off" or "[not requested]", the NIC may not support offload
+# or it needs to be enabled:
+$ ethtool -K eth0 esp-hw-offload on
+
 1.4. Exported Functions
 
 1.4.1.  ipsec_create([port_server], [port_client], [algos])
@@ -302,7 +399,7 @@ modparam("proto_ipsec", "disable_deprecated_algorithms", yes)
 
    This function can be used from REPLY_ROUTE.
 
-   Example 1.9. ipsec_create() usage
+   Example 1.12. ipsec_create() usage
 ...
 onreply_route[ipsec] {
         if ($T_reply_code == 401)
@@ -329,13 +426,16 @@ onreply_route[ipsec] {
        server channel.
      * port-c - local port chosen for communicating through the
        client channel.
-     * port-c - local port chosen for communicating through the
+     * port-s - local port chosen for communicating through the
        server channel.
+     * mode - IPSec mode being used: trans for transport mode or
+       UDP-enc-tun for NAT-T tunnel mode (as per 3GPP TS 33.203
+       Annex M).
 
-   Example 1.10. $ipsec(field) usage
+   Example 1.13. $ipsec(field) usage
 ...
 xlog("Using $ipsec(ip):$ipsec(port-c) and $ipsec(ip):$ipsec(port-s) sock
-et\n");
+et, mode=$ipsec(mode)\n");
 ...
 
 1.5.2. $ipsec_ue
@@ -356,13 +456,16 @@ et\n");
        server channel.
      * port-c - remote port chosen for communicating through the
        client channel.
-     * port-c - remote port chosen for communicating through the
+     * port-s - remote port chosen for communicating through the
        server channel.
+     * mode - IPSec mode being used: trans for transport mode or
+       UDP-enc-tun for NAT-T tunnel mode (as per 3GPP TS 33.203
+       Annex M).
 
-   Example 1.11. $ipsec_ue(field) usage
+   Example 1.14. $ipsec_ue(field) usage
 ...
-xlog("Using $ipsec_ue(ip):$ipsec_ue(port-c) and $ipsec_ue(ip):$ipsec_ue(
-port-s) socket\n");
+xlog("UE $ipsec_ue(ip):$ipsec_ue(port-c) and $ipsec_ue(ip):$ipsec_ue(por
+t-s), mode=$ipsec_ue(mode)\n");
 ...
 
 Chapter 2. Contributors
