@@ -661,38 +661,6 @@ static_assert(sizeof(struct xfrm_algo_osips) == sizeof(struct xfrm_algo)
 #define XFRM_OFFLOAD_PACKET 2
 #endif
 
-/* Hardware offload state */
-int ipsec_hw_offload_ifindex = 0;   /* 0 = disabled */
-int ipsec_hw_offload_enabled = 0;   /* Runtime flag */
-
-/*
- * Initialize hardware offload by resolving interface name to index
- * Returns: 0 on success, -1 on error
- */
-int ipsec_hw_offload_init(const char *ifname)
-{
-	unsigned int ifindex;
-
-	if (!ifname || !ifname[0]) {
-		ipsec_hw_offload_ifindex = 0;
-		ipsec_hw_offload_enabled = 0;
-		return 0;
-	}
-
-	ifindex = if_nametoindex(ifname);
-	if (ifindex == 0) {
-		LM_ERR("Hardware offload: interface '%s' not found: %s\n",
-				ifname, strerror(errno));
-		return -1;
-	}
-
-	ipsec_hw_offload_ifindex = ifindex;
-	ipsec_hw_offload_enabled = 1;
-	LM_INFO("Hardware offload enabled on interface '%s' (index %u)\n",
-			ifname, ifindex);
-	return 0;
-}
-
 /*
  * Structure for XFRM hardware offload (xfrm_user_offload)
  * This is defined in linux/xfrm.h but may not be available on older kernels
