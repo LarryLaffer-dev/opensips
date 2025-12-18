@@ -801,10 +801,9 @@ int aka_av_add(str *pub_id, str *priv_id, int algmask,
 	ret = 1;
 	LM_DBG("adding av %p\n", av);
 
-	/* Store AV in CacheDB for cross-node synchronization */
-	if (aka_cdb_store_av(pub_id, priv_id, av) < 0) {
-		LM_WARN("failed to store AV in cachedb, cross-node auth may fail\n");
-	}
+	/* Note: Don't store AV in CacheDB here with state=NEW.
+	 * The AV will be stored when it's marked as USING in aka_av_get_new().
+	 * This ensures cross-node lookups always find AVs in a valid state. */
 end:
 	aka_user_release(user);
 	return ret;
