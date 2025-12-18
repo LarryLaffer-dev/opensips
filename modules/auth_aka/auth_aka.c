@@ -905,13 +905,17 @@ static int aka_authorize(struct sip_msg *_msg, str *_realm,
 	if (user == NULL) {
 		/* User not found locally - check CacheDB if configured */
 		if (aka_cdb && digest->nonce.len) {
-			LM_DBG("user not found locally, checking CacheDB for nonce %.*s\n",
+			LM_DBG("user not found locally, checking CacheDB for %.*s/%.*s nonce %.*s\n",
+				public_id->len, public_id->s, private_id->len, private_id->s,
 				digest->nonce.len, digest->nonce.s);
 			av = aka_cdb_fetch_av(public_id, private_id, &digest->nonce);
 			if (av) {
+				LM_DBG("AV fetched from CacheDB: state=%d algmask=%d alg=%d\n",
+					av->state, av->algmask, av->alg);
 				/* Check state - only USING or USED states are valid */
 				if (av->state != AKA_AV_USING && av->state != AKA_AV_USED) {
-					LM_DBG("AV found in CacheDB but invalid state %d\n", av->state);
+					LM_WARN("AV from CacheDB has invalid state %d (expected USING=%d or USED=%d)\n",
+						av->state, AKA_AV_USING, AKA_AV_USED);
 					shm_free(av);
 					return STALE_NONCE;
 				}
