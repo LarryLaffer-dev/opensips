@@ -87,28 +87,47 @@ static int aka_cdb_serialize_av(struct aka_av *av, str *value)
 {
 	char state_buf[16], algmask_buf[16], alg_buf[16];
 	int state_len, algmask_len, alg_len;
+	char *authorize_hex;
+	int authorize_hex_len;
+	char *p;
+	int i;
 
 	state_len = snprintf(state_buf, sizeof(state_buf), "%d", av->state);
 	algmask_len = snprintf(algmask_buf, sizeof(algmask_buf), "%d", av->algmask);
 	alg_len = snprintf(alg_buf, sizeof(alg_buf), "%d", av->alg);
 
+	/* authorize (XRES) is binary - hex encode it */
+	authorize_hex_len = av->authorize.len * 2;
+	authorize_hex = pkg_malloc(authorize_hex_len + 1);
+	if (!authorize_hex) {
+		LM_ERR("oom for authorize hex encoding\n");
+		return -1;
+	}
+	for (i = 0; i < av->authorize.len; i++)
+		sprintf(authorize_hex + i * 2, "%02x", (unsigned char)av->authorize.s[i]);
+	authorize_hex[authorize_hex_len] = '\0';
+
 	value->len = state_len + 1 + algmask_len + 1 + alg_len + 1 +
-		av->authenticate.len + 1 + av->authorize.len + 1 +
+		av->authenticate.len + 1 + authorize_hex_len + 1 +
 		av->ck.len + 1 + av->ik.len;
 	value->s = pkg_malloc(value->len + 1);
 	if (!value->s) {
 		LM_ERR("oom for cachedb value\n");
+		pkg_free(authorize_hex);
 		return -1;
 	}
 
-	snprintf(value->s, value->len + 1, "%s%c%s%c%s%c%.*s%c%.*s%c%.*s%c%.*s",
+	p = value->s;
+	p += sprintf(p, "%s%c%s%c%s%c%.*s%c%s%c%.*s%c%.*s",
 		state_buf, AKA_CDB_DELIM,
 		algmask_buf, AKA_CDB_DELIM,
 		alg_buf, AKA_CDB_DELIM,
 		av->authenticate.len, av->authenticate.s, AKA_CDB_DELIM,
-		av->authorize.len, av->authorize.s, AKA_CDB_DELIM,
+		authorize_hex, AKA_CDB_DELIM,
 		av->ck.len, av->ck.s, AKA_CDB_DELIM,
 		av->ik.len, av->ik.s);
+
+	pkg_free(authorize_hex);
 	return 0;
 }
 
@@ -142,7 +161,8 @@ static struct aka_av *aka_cdb_deserialize_av(str *value)
 	str field;
 	char *pos, *end;
 	int state, algmask, alg;
-	str authenticate, authorize, ck, ik;
+	str authenticate, authorize_hex, ck, ik;
+	int authorize_len;
 	char *p;
 
 	pos = value->s;
@@ -172,8 +192,9 @@ static struct aka_av *aka_cdb_deserialize_av(str *value)
 	/* Parse authenticate */
 	aka_cdb_parse_field(pos, end, &authenticate, &pos);
 
-	/* Parse authorize */
-	aka_cdb_parse_field(pos, end, &authorize, &pos);
+	/* Parse authorize (hex encoded) */
+	aka_cdb_parse_field(pos, end, &authorize_hex, &pos);
+	authorize_len = authorize_hex.len / 2;
 
 	/* Parse ck */
 	aka_cdb_parse_field(pos, end, &ck, &pos);
@@ -181,8 +202,8 @@ static struct aka_av *aka_cdb_deserialize_av(str *value)
 	/* Parse ik */
 	aka_cdb_parse_field(pos, end, &ik, &pos);
 
-	/* Allocate AV structure */
-	av = shm_malloc(sizeof(*av) + authenticate.len + authorize.len + ck.len + ik.len);
+	/* Allocate AV structure - authorize is stored as binary (half of hex len) */
+	av = shm_malloc(sizeof(*av) + authenticate.len + authorize_len + ck.len + ik.len);
 	if (!av) {
 		LM_ERR("oom for cached AV\n");
 		return NULL;
@@ -198,10 +219,15 @@ static struct aka_av *aka_cdb_deserialize_av(str *value)
 	memcpy(p, authenticate.s, authenticate.len);
 	p += authenticate.len;
 
+	/* Hex decode authorize (XRES) */
 	av->authorize.s = p;
-	av->authorize.len = authorize.len;
-	memcpy(p, authorize.s, authorize.len);
-	p += authorize.len;
+	av->authorize.len = authorize_len;
+	if (hex2string(authorize_hex.s, authorize_hex.len, p) < 0) {
+		LM_ERR("failed to decode authorize hex\n");
+		shm_free(av);
+		return NULL;
+	}
+	p += authorize_len;
 
 	av->ck.s = p;
 	av->ck.len = ck.len;
