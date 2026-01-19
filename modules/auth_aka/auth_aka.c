@@ -901,19 +901,36 @@ static int aka_authorize(struct sip_msg *_msg, str *_realm,
 	LM_DBG("authorizing realm=[%.*s] impu=[%.*s] impi=[%.*s]\n",
 			realm.len, realm.s, public_id->len, public_id->s,
 			private_id->len, private_id->s);
+
+	// #region agent log H1-entry
+	{FILE *_df = fopen("/tmp/debug.log", "a"); if(_df){fprintf(_df, "{\"hypothesisId\":\"H1\",\"location\":\"auth_aka.c:aka_authorize\",\"message\":\"entry\",\"data\":{\"aka_cdb\":\"%p\",\"nonce_len\":%d,\"nonce\":\"%.*s\"}}\n", (void*)aka_cdb, digest->nonce.len, digest->nonce.len, digest->nonce.s); fclose(_df);}}
+	// #endregion
+
 	user = aka_user_find(public_id, private_id);
 	if (user == NULL) {
+		// #region agent log H2-user-null
+		{FILE *_df = fopen("/tmp/debug.log", "a"); if(_df){fprintf(_df, "{\"hypothesisId\":\"H2\",\"location\":\"auth_aka.c:aka_authorize\",\"message\":\"user_not_found_locally\",\"data\":{\"checking_cdb\":%d}}\n", (aka_cdb && digest->nonce.len) ? 1 : 0); fclose(_df);}}
+		// #endregion
+
 		/* User not found locally - check CacheDB if configured */
 		if (aka_cdb && digest->nonce.len) {
 			LM_DBG("user not found locally, checking CacheDB for %.*s/%.*s nonce %.*s\n",
 				public_id->len, public_id->s, private_id->len, private_id->s,
 				digest->nonce.len, digest->nonce.s);
 			av = aka_cdb_fetch_av(public_id, private_id, &digest->nonce);
+
+			// #region agent log H1-fetch-result
+			{FILE *_df = fopen("/tmp/debug.log", "a"); if(_df){fprintf(_df, "{\"hypothesisId\":\"H1\",\"location\":\"auth_aka.c:aka_authorize\",\"message\":\"cdb_fetch_result\",\"data\":{\"av\":\"%p\",\"state\":%d,\"algmask\":%d,\"alg\":%d}}\n", (void*)av, av ? av->state : -1, av ? av->algmask : -1, av ? av->alg : -1); fclose(_df);}}
+			// #endregion
+
 			if (av) {
 				LM_DBG("AV fetched from CacheDB: state=%d algmask=%d alg=%d\n",
 					av->state, av->algmask, av->alg);
 				/* Check state - only USING or USED states are valid */
 				if (av->state != AKA_AV_USING && av->state != AKA_AV_USED) {
+					// #region agent log H3-state-reject
+					{FILE *_df = fopen("/tmp/debug.log", "a"); if(_df){fprintf(_df, "{\"hypothesisId\":\"H3\",\"location\":\"auth_aka.c:aka_authorize\",\"message\":\"state_rejected\",\"data\":{\"state\":%d,\"expected_using\":%d,\"expected_used\":%d}}\n", av->state, AKA_AV_USING, AKA_AV_USED); fclose(_df);}}
+					// #endregion
 					LM_WARN("AV from CacheDB has invalid state %d (expected USING=%d or USED=%d)\n",
 						av->state, AKA_AV_USING, AKA_AV_USED);
 					shm_free(av);
@@ -921,11 +938,21 @@ static int aka_authorize(struct sip_msg *_msg, str *_realm,
 				}
 				/* Create user locally and attach the AV */
 				user = aka_user_get(public_id, private_id);
+
+				// #region agent log H2-user-create
+				{FILE *_df = fopen("/tmp/debug.log", "a"); if(_df){fprintf(_df, "{\"hypothesisId\":\"H2\",\"location\":\"auth_aka.c:aka_authorize\",\"message\":\"user_create_result\",\"data\":{\"user\":\"%p\"}}\n", (void*)user); fclose(_df);}}
+				// #endregion
+
 				if (user) {
 					cond_lock(&user->cond);
 					av->state = AKA_AV_USED;
 					list_add_tail(&av->list, &user->avs);
 					cond_unlock(&user->cond);
+
+					// #region agent log H3-av-attached
+					{FILE *_df = fopen("/tmp/debug.log", "a"); if(_df){fprintf(_df, "{\"hypothesisId\":\"H3\",\"location\":\"auth_aka.c:aka_authorize\",\"message\":\"av_attached_to_user\",\"data\":{\"av_state\":%d}}\n", av->state); fclose(_df);}}
+					// #endregion
+
 					LM_DBG("created local user from CacheDB AV\n");
 					goto av_found;
 				} else {
@@ -934,6 +961,11 @@ static int aka_authorize(struct sip_msg *_msg, str *_realm,
 				}
 			}
 		}
+
+		// #region agent log H4-failure
+		{FILE *_df = fopen("/tmp/debug.log", "a"); if(_df){fprintf(_df, "{\"hypothesisId\":\"H4\",\"location\":\"auth_aka.c:aka_authorize\",\"message\":\"returning_stale_nonce\",\"data\":{\"nonce_len\":%d}}\n", digest->nonce.len); fclose(_df);}}
+		// #endregion
+
 		if (digest->nonce.len)
 			LM_ERR("could not get AKA user %.*s/%.*s with nonce %.*s\n",
 					public_id->len, public_id->s, private_id->len, private_id->s,
@@ -952,6 +984,10 @@ static int aka_authorize(struct sip_msg *_msg, str *_realm,
 		goto release;
 	}
 av_found:
+
+	// #region agent log H5-av-found
+	{FILE *_df = fopen("/tmp/debug.log", "a"); if(_df){fprintf(_df, "{\"hypothesisId\":\"H5\",\"location\":\"auth_aka.c:aka_authorize\",\"message\":\"av_found_reached\",\"data\":{\"av\":\"%p\",\"av_state\":%d,\"xres_len\":%d}}\n", (void*)av, av ? av->state : -1, av ? av->authorize.len : -1); fclose(_df);}}
+	// #endregion
 
 	/* now that we are trusting the user, check whether it has an auts
 	 * parameter - if it does, we need to re-challenge him */
@@ -975,10 +1011,17 @@ av_found:
 	}
 
 	if (!auth_api.check_response(digest,
-			&_msg->first_line.u.request.method, &msg_body, &ha1))
+			&_msg->first_line.u.request.method, &msg_body, &ha1)) {
+		// #region agent log H5-auth-success
+		{FILE *_df = fopen("/tmp/debug.log", "a"); if(_df){fprintf(_df, "{\"hypothesisId\":\"H5\",\"location\":\"auth_aka.c:aka_authorize\",\"message\":\"auth_success\",\"data\":{}}\n"); fclose(_df);}}
+		// #endregion
 		ret = auth_api.post_auth(_msg, h);
-	else
+	} else {
+		// #region agent log H5-auth-failure
+		{FILE *_df = fopen("/tmp/debug.log", "a"); if(_df){fprintf(_df, "{\"hypothesisId\":\"H5\",\"location\":\"auth_aka.c:aka_authorize\",\"message\":\"auth_failed_invalid_password\",\"data\":{\"xres_len\":%d}}\n", av ? av->authorize.len : -1); fclose(_df);}}
+		// #endregion
 		ret = INVALID_PASSWORD;
+	}
 
 release:
 	aka_user_release(user);
