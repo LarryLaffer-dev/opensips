@@ -286,6 +286,7 @@ struct aka_av *aka_cdb_fetch_av(str *impu, str *impi, str *nonce)
 {
 	str key, value;
 	struct aka_av *av = NULL;
+	int get_ret;
 
 	if (!aka_cdb) {
 		return NULL; /* CacheDB not configured */
@@ -298,13 +299,28 @@ struct aka_av *aka_cdb_fetch_av(str *impu, str *impi, str *nonce)
 	value.len = 0;
 
 	LM_DBG("fetching AV key=%.*s\n", key.len, key.s);
-	if (aka_cdbf.get(aka_cdb, &key, &value) <= 0 || value.s == NULL) {
+	get_ret = aka_cdbf.get(aka_cdb, &key, &value);
+
+	// #region agent log H4-cdb-get
+	{FILE *_df = fopen("/tmp/debug.log", "a"); if(_df){fprintf(_df, "{\"hypothesisId\":\"H4\",\"location\":\"aka_av_mgm.c:aka_cdb_fetch_av\",\"message\":\"cdb_get_result\",\"data\":{\"get_ret\":%d,\"value_s\":\"%p\",\"value_len\":%d,\"key\":\"%.*s\"}}\n", get_ret, (void*)value.s, value.len, key.len, key.s); fclose(_df);}}
+	// #endregion
+
+	if (get_ret <= 0 || value.s == NULL) {
 		LM_DBG("AV not found in cachedb for key=%.*s\n", key.len, key.s);
 		pkg_free(key.s);
 		return NULL;
 	}
 
+	// #region agent log H1-deserialize-input
+	{FILE *_df = fopen("/tmp/debug.log", "a"); if(_df){fprintf(_df, "{\"hypothesisId\":\"H1\",\"location\":\"aka_av_mgm.c:aka_cdb_fetch_av\",\"message\":\"deserialize_input\",\"data\":{\"value_len\":%d,\"value\":\"%.*s\"}}\n", value.len, value.len > 200 ? 200 : value.len, value.s); fclose(_df);}}
+	// #endregion
+
 	av = aka_cdb_deserialize_av(&value);
+
+	// #region agent log H1-deserialize-result
+	{FILE *_df = fopen("/tmp/debug.log", "a"); if(_df){fprintf(_df, "{\"hypothesisId\":\"H1\",\"location\":\"aka_av_mgm.c:aka_cdb_fetch_av\",\"message\":\"deserialize_result\",\"data\":{\"av\":\"%p\",\"state\":%d,\"xres_len\":%d}}\n", (void*)av, av ? av->state : -1, av ? av->authorize.len : -1); fclose(_df);}}
+	// #endregion
+
 	if (av) {
 		LM_DBG("fetched AV from cachedb key=%.*s state=%d\n",
 			key.len, key.s, av->state);
