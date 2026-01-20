@@ -305,7 +305,7 @@ struct aka_av *aka_cdb_fetch_av(str *impu, str *impi, str *nonce)
 	{FILE *_df = fopen("/tmp/debug.log", "a"); if(_df){fprintf(_df, "{\"hypothesisId\":\"H4\",\"location\":\"aka_av_mgm.c:aka_cdb_fetch_av\",\"message\":\"cdb_get_result\",\"data\":{\"get_ret\":%d,\"value_s\":\"%p\",\"value_len\":%d,\"key\":\"%.*s\"}}\n", get_ret, (void*)value.s, value.len, key.len, key.s); fclose(_df);}}
 	// #endregion
 
-	if (get_ret <= 0 || value.s == NULL) {
+	if (get_ret < 0 || value.s == NULL) {
 		LM_DBG("AV not found in cachedb for key=%.*s\n", key.len, key.s);
 		pkg_free(key.s);
 		return NULL;
