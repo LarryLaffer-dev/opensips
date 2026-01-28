@@ -329,6 +329,7 @@ static int dm_send_request(struct sip_msg *msg, int *app_id, int *cmd_code,
 		goto error;
 	}
 	cJSON_Delete(avps);
+	avps = NULL;
 
 	if (_dm_send_message(NULL, dmsg, &rpl) != 0)
 		goto error;
