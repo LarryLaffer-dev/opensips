@@ -54,6 +54,29 @@ int dm_answer_timeout = 2000; /* ms */
 int dm_max_json_log_size   = 512;
 int dm_server_autoreply_error; /* ensures we always reply with *something* */
 
+static int dm_last_result_code;
+static int dm_last_experimental_rc;
+
+static int pv_get_dm_result_code(struct sip_msg *msg, pv_param_t *param,
+		pv_value_t *val)
+{
+	return pv_get_sintval(msg, param, val, dm_last_result_code);
+}
+
+static int pv_get_dm_experimental_rc(struct sip_msg *msg, pv_param_t *param,
+		pv_value_t *val)
+{
+	return pv_get_sintval(msg, param, val, dm_last_experimental_rc);
+}
+
+static const pv_export_t mod_pvars[] = {
+	{ str_const_init("diameter_result_code"), 2100,
+	  pv_get_dm_result_code, 0, 0, 0, 0, 0 },
+	{ str_const_init("diameter_experimental_result_code"), 2101,
+	  pv_get_dm_experimental_rc, 0, 0, 0, 0, 0 },
+	{ {0, 0}, 0, 0, 0, 0, 0, 0, 0 }
+};
+
 static const cmd_export_t cmds[]= {
 	{"dm_send_request", (cmd_function)dm_send_request, {
 		{CMD_PARAM_INT,0,0},
@@ -127,7 +150,7 @@ struct module_exports exports =
 	params,           /* param exports */
 	NULL,             /* exported statistics */
 	mi_cmds,          /* exported MI functions */
-	NULL,             /* exported pseudo-variables */
+	mod_pvars,        /* exported pseudo-variables */
 	NULL,             /* exported transformations */
 	procs,            /* extra processes */
 	NULL,             /* module pre-initialization function */
@@ -332,18 +355,27 @@ static int dm_send_request(struct sip_msg *msg, int *app_id, int *cmd_code,
 
 	if (_dm_send_message(NULL, dmsg, &rpl) != 0)
 		goto ret;
-	rc = _dm_get_message_response(rpl, (rpl_avps_pv?&rpl_avps:NULL));
 
-	if (rpl_avps_pv) {
-		pv_value_t val = {(str){rpl_avps, strlen(rpl_avps)}, 0, PV_VAL_STR};
-		if (pv_set_value(msg, rpl_avps_pv, 0, &val) != 0)
-			LM_ERR("failed to set output rpl_avps pv to: %s\n", rpl_avps);
-		_dm_release_message_response(rpl, rpl_avps);
-	}
+	{
+		diameter_reply dm_rpl;
+		memset(&dm_rpl, 0, sizeof dm_rpl);
+		rc = _dm_get_message_response(rpl,
+				(rpl_avps_pv ? &rpl_avps : NULL), &dm_rpl);
 
-	if (rc != 0) {
-		LM_ERR("Diameter request failed (rc: %d)\n", rc);
-		return rc;
+		dm_last_result_code = dm_rpl.rc;
+		dm_last_experimental_rc = dm_rpl.experimental_rc;
+
+		if (rpl_avps_pv) {
+			pv_value_t val = {(str){rpl_avps, strlen(rpl_avps)}, 0, PV_VAL_STR};
+			if (pv_set_value(msg, rpl_avps_pv, 0, &val) != 0)
+				LM_ERR("failed to set output rpl_avps pv to: %s\n", rpl_avps);
+			_dm_release_message_response(rpl, rpl_avps);
+		}
+
+		if (rc != 0) {
+			LM_ERR("Diameter request failed (rc: %d)\n", rc);
+			return -3;
+		}
 	}
 
 	return 1;
@@ -508,11 +540,22 @@ static int dm_send_request_async_reply(int fd,
 		LM_ERR("could not resume async route!\n");
 		goto error;
 	}
-	ret = _dm_get_message_response(amsg->cond, (amsg->ret?&rpl_avps:NULL));
+	{
+		diameter_reply dm_rpl;
+		memset(&dm_rpl, 0, sizeof dm_rpl);
+		ret = _dm_get_message_response(amsg->cond,
+				(amsg->ret ? &rpl_avps : NULL), &dm_rpl);
+
+		dm_last_result_code = dm_rpl.rc;
+		dm_last_experimental_rc = dm_rpl.experimental_rc;
+	}
+
 	if (ret == 0)
 		ret = 1;
-	else
+	else {
 		LM_ERR("Diameter request failed\n");
+		ret = -3;
+	}
 	if (ret > 0 && rpl_avps) {
 		val.rs.s = rpl_avps;
 		val.rs.len = strlen(rpl_avps);
