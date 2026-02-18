@@ -595,9 +595,9 @@ routing_info:
 		else
 			skip_rrs = dlg->from_rr_nb +
 					((t->relaied_reply_branch>=0)?
-					(t->uac[t->relaied_reply_branch].added_rr):0);
+					(TM_BRANCH(t,t->relaied_reply_branch).added_rr):0);
 
-		LM_DBG("Skipping %d ,%d, %d, %d \n",skip_rrs, dlg->from_rr_nb,t->relaied_reply_branch,t->uac[t->relaied_reply_branch].added_rr);
+		LM_DBG("Skipping %d ,%d, %d, %d \n",skip_rrs, dlg->from_rr_nb,t->relaied_reply_branch,TM_BRANCH(t,t->relaied_reply_branch).added_rr);
 		get_routing_info(rpl, 0, &skip_rrs, &contact, &rr_set);
 
 		dlg_update_sdp(dlg, rpl, leg, 0);
@@ -645,7 +645,8 @@ static void dlg_onreply(struct cell* t, int type, struct tmcb_params *param)
 		   conflicts -bogdan */
 		if (rpl!=FAKED_REPLY) {
 			if (req->msg_flags & (FL_USE_UAC_FROM | FL_USE_UAC_TO ) ) {
-				req_out_buff = &t->uac[d_tmb.get_branch_index()].request.buffer;
+				req_out_buff =
+					& TM_BRANCH(t,d_tmb.get_branch_index()).request.buffer;
 				if (extract_ftc_hdrs(req_out_buff->s,req_out_buff->len,
 				(req->msg_flags & FL_USE_UAC_FROM )?&mangled_from:0,
 				(req->msg_flags & FL_USE_UAC_TO )?&mangled_to:0,0,0) != 0) {
@@ -1479,6 +1480,7 @@ static inline int dlg_update_contact(struct dlg_cell *dlg, struct sip_msg *msg,
 	str contact, new_ct, old_ct;
 	int ret = 0;
 	contact_t *ct = NULL;
+	contact_body_t *parsed_body = NULL;
 
 	if (!msg->contact &&
 		(parse_headers(msg, HDR_CONTACT_F, 0) < 0 || !msg->contact)) {
@@ -1496,7 +1498,14 @@ static inline int dlg_update_contact(struct dlg_cell *dlg, struct sip_msg *msg,
 		contact = ct->uri;
 		LM_DBG("Found unparsed contact [%.*s]\n", contact.len, contact.s);
 	} else {
-		contact = ((contact_body_t *)msg->contact->parsed)->contacts->uri;
+		parsed_body = (contact_body_t *)msg->contact->parsed;
+
+		if (parsed_body->star == 1) {
+			LM_WARN("Invalid star Contact in dialog update!\n");
+			return 0;
+		}
+
+		contact = parsed_body->contacts->uri;
 	}
 
 	/* if the same contact, don't do anything */

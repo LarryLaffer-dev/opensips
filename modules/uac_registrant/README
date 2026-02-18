@@ -31,6 +31,7 @@ UAC Registrant Module
               1.3.16. forced_socket_column (string)
               1.3.17. cluster_shtag_column (string)
               1.3.18. state_column (string)
+              1.3.19. reregister_expiry_percentage (integer)
 
         1.4. Exported Functions
         1.5. Exported MI Functions
@@ -40,6 +41,22 @@ UAC Registrant Module
               1.5.3. reg_enable
               1.5.4. reg_disable
               1.5.5. reg_force_register
+              1.5.6. reg_upsert
+              1.5.7. reg_delete
+
+        1.6. Exported Events
+
+              1.6.1. E_REGISTRANT_REGISTERING
+              1.6.2. E_REGISTRANT_AUTHENTICATING
+              1.6.3. E_REGISTRANT_REGISTERED
+              1.6.4. E_REGISTRANT_REGISTER_TIMEOUT
+              1.6.5. E_REGISTRANT_INTERNAL_ERROR
+              1.6.6. E_REGISTRANT_WRONG_CREDENTIALS
+              1.6.7. E_REGISTRANT_REGISTRAR_ERROR
+              1.6.8. E_REGISTRANT_UNREGISTERING
+              1.6.9. E_REGISTRANT_AUTHENTICATING_UNREGISTER
+
+        1.7. Exported Status/Report Identifiers
 
    2. Contributors
 
@@ -77,6 +94,7 @@ UAC Registrant Module
    1.16. Set “forced_socket_column” parameter
    1.17. Set “cluster_shtag_column” parameter
    1.18. Set “state_column” parameter
+   1.19. Set “reregister_expiry_percentage” parameter
 
 Chapter 1. Admin Guide
 
@@ -398,6 +416,21 @@ modparam("uac_registrant", "cluster_shtag_column", "sh")
 modparam("uac_registrant", "state_column", "status")
 ...
 
+1.3.19. reregister_expiry_percentage (integer)
+
+   Percentage describing how much sooner a RE-REGISTER needs to be
+   send based on the Expiry. a 100 value means the RE-REGISTER
+   will be send right on the edge of expiry ( old behavior ),
+   which might lead to registration loss. a 90 value means the
+   RE-REGISTER will be sent sooner , at 90% of the Expiry, etc.
+
+   Default value is “100”.
+
+   Example 1.19. Set “reregister_expiry_percentage” parameter
+...
+modparam("uac_registrant", "reregister_expiry_percentage", 90)
+...
+
 1.4. Exported Functions
 
    None to be used in configuration file.
@@ -513,6 +546,194 @@ opensips-cli -x mi reg_disable sip:alice@opensips.org  sip:alice@127.0.0
 opensips-cli -x mi reg_force_register sip:alice@opensips.org  sip:alice@
 127.0.0.1:5060 sip:opensips.org
 
+1.5.6. reg_upsert
+
+   Inserts or updates the in-memory contents of the
+   AOR/Contact/Registrar. No Database queries are done when
+   calling this MI command, all parameters are passed via MI
+
+   Name: reg_upsert
+
+   Parameters:
+     * aor - URI defining the address
+     * contact - Contact URI
+     * registrar - URI pointing to the remote registrar
+     * proxy - URI of a registration proxy
+     * third_party_registrant - 3rd party registrant
+     * username - the username for auth purposes
+     * password - the password for auth purposes
+     * binding_params - params to be added to the registration
+     * expiry - number of seconds that the registration will be
+       valid
+     * forced_socket - opensips socket to send out the register
+       out through
+     * cluster_shtag - the sharing tag for this registration
+     * state - 0 for enabled, 1 for disabled
+
+   MI FIFO Command Format:
+opensips-cli -x mi reg_upsert aor=sip:vlad@test.com contact=sip:test@loc
+alhost registrar=sip:127.0.0.1:5061 proxy="" third_party_registrant="" u
+sername="vlad" password="1234" binding_params="" expiry=60 forced_socket
+="" cluster_shtag="" state=0
+
+1.5.7. reg_delete
+
+   Deletes the in-memory contents of the AOR/Contact/Registrar. No
+   Database queries are done when calling this MI command, all
+   parameters are passed via MI
+
+   Name: reg_delete
+
+   Parameters:
+     * aor - URI defining the address
+     * contact - Contact URI
+     * registrar - URI pointing to the remote registrar
+
+   MI FIFO Command Format:
+opensips-cli -x mi reg_delete aor=sip:vlad@test.com contact=sip:test@loc
+alhost registrar=sip:127.0.0.1:5061
+
+1.6. Exported Events
+
+1.6.1.  E_REGISTRANT_REGISTERING
+
+   This event is raised when the module sent the initial REGISTER
+   and started the registration process.
+
+   Parameters:
+     * aor - the AOR
+     * contact - the Contact
+     * registrar - the Registrar
+
+1.6.2.  E_REGISTRANT_AUTHENTICATING
+
+   This event is raised when the initial REGISTER has been
+   challenged and a new REGISTER with credentials has been sent
+   out.
+
+   Parameters:
+     * aor - the AOR
+     * contact - the Contact
+     * registrar - the Registrar
+
+1.6.3.  E_REGISTRANT_REGISTERED
+
+   This event is raised when a REGISTER has been 200 OKd.
+
+   Parameters:
+     * aor - the AOR
+     * contact - the Contact
+     * registrar - the Registrar
+
+1.6.4.  E_REGISTRANT_REGISTER_TIMEOUT
+
+   This event is raised when a REGISTER received no reply from the
+   registrar.
+
+   Parameters:
+     * aor - the AOR
+     * contact - the Contact
+     * registrar - the Registrar
+
+1.6.5.  E_REGISTRANT_INTERNAL_ERROR
+
+   This event is raised when a REGISTER procesing was stopped due
+   to an internal OpenSIPS error.
+
+   Parameters:
+     * aor - the AOR
+     * contact - the Contact
+     * registrar - the Registrar
+
+1.6.6.  E_REGISTRANT_WRONG_CREDENTIALS
+
+   This event is raised when a REGISTER with credentials was still
+   rejected by the registrar
+
+   Parameters:
+     * aor - the AOR
+     * contact - the Contact
+     * registrar - the Registrar
+
+1.6.7.  E_REGISTRANT_REGISTRAR_ERROR
+
+   This event is raised when a REGISTER is rejected by the
+   registrar with a non-standard sip code.
+
+   Parameters:
+     * aor - the AOR
+     * contact - the Contact
+     * registrar - the Registrar
+
+1.6.8.  E_REGISTRANT_UNREGISTERING
+
+   This event is raised when a de-REGISTER is sent by OpenSIPS.
+
+   Parameters:
+     * aor - the AOR
+     * contact - the Contact
+     * registrar - the Registrar
+
+1.6.9.  E_REGISTRANT_AUTHENTICATING_UNREGISTER
+
+   This event is raised when a de-REGISTER is challenged and auth
+   is sent by OpenSIPS.
+
+   Parameters:
+     * aor - the AOR
+     * contact - the Contact
+     * registrar - the Registrar
+
+1.7. Exported Status/Report Identifiers
+
+   The module provides the "uac_registrant" Status/Report group,
+   where each UAC registrant is defined as a separate SR
+   identifier.
+
+   The name of each individual identitfier is built as follows:
+   "aor=_AOR_;contact=_SIP_CONTACT_URI_;registrar=_SIP_REGISTAR_URI_"
+   Ex:
+   "aor=sip:vlad@test.com;contact=sip:test@mycontact.com;registrar=sip:1
+27.0.0.1:5061"
+
+   In terms of status, the following values will be reported:
+     * STATUS_READY, if REGISTERED
+     * STATUS_LOADING_DATA, if REGISTERING, UNREGISTERING,
+       AUTHENTICATING
+     * STATUS_NOT_READY, any other state of the registrant
+
+   As reports, each identifier may provide information like:
+
+# opensips-cli -x mi  sr_list_reports uac_registrant
+[
+   {
+       "Name": "aor=sip:vlad@test.com;contact=sip:test@mycontact.com;reg
+istrar=sip:127.0.0.1:5061",
+       "Reports": [
+           {
+               "Timestamp": 1769604697,
+               "Date": "Wed Jan 28 14:51:37 2026",
+               "Log": "created with state NOT_REGISTERED_STATE\n"
+           },
+           {
+               "Timestamp": 1769604707,
+               "Date": "Wed Jan 28 14:51:47 2026",
+               "Log": "state changed to REGISTERING_STATE\n"
+           },
+           {
+               "Timestamp": 1769604712,
+               "Date": "Wed Jan 28 14:51:52 2026",
+               "Log": "state changed to REGISTER_TIMEOUT_STATE\n"
+           }
+       ]
+   }
+]
+
+   For how to access and use the Status/Report information, please
+   see
+   https://www.opensips.org/Documentation/Interface-StatusReport-3
+   -6.
+
 Chapter 2. Contributors
 
 2.1. By Commit Statistics
@@ -521,14 +742,14 @@ Chapter 2. Contributors
    commits^(2) and lines added/removed^(3)
      Name DevScore Commits Lines ++ Lines --
    1. Ovidiu Sas (@ovidiusas) 143 41 5688 3268
-   2. Bogdan-Andrei Iancu (@bogdan-iancu) 18 13 451 49
-   3. Liviu Chircu (@liviuchircu) 17 14 57 68
-   4. Vlad Patrascu (@rvlad-patrascu) 16 7 732 118
-   5. Razvan Crainea (@razvancrainea) 11 9 26 36
-   6. Nick Altmann (@nikbyte) 5 3 43 4
-   7. Maksym Sobolyev (@sobomax) 5 3 20 16
-   8. James Stanley 4 2 21 14
-   9. Vlad Paiu (@vladpaiu) 4 2 6 3
+   2. Vlad Paiu (@vladpaiu) 25 10 1258 240
+   3. Bogdan-Andrei Iancu (@bogdan-iancu) 21 15 523 50
+   4. Liviu Chircu (@liviuchircu) 17 14 57 68
+   5. Vlad Patrascu (@rvlad-patrascu) 16 7 732 118
+   6. Razvan Crainea (@razvancrainea) 11 9 26 36
+   7. Nick Altmann (@nikbyte) 5 3 43 4
+   8. Maksym Sobolyev (@sobomax) 5 3 20 16
+   9. James Stanley 4 2 21 14
    10. sagarmalam 3 1 15 1
 
    All remaining contributors: Walter Doekes (@wdoekes), James
@@ -554,20 +775,20 @@ Chapter 2. Contributors
 
    Table 2.2. Most recently active contributors^(1) to this module
                       Name                   Commit Activity
-   1.  Nick Altmann (@nikbyte)             Nov 2015 - Mar 2025
-   2.  okhowang(王沛文)                       Jul 2024 - Jul 2024
-   3.  James Stanley                       Dec 2023 - Jun 2024
-   4.  Bogdan-Andrei Iancu (@bogdan-iancu) Dec 2012 - May 2024
-   5.  Ovidiu Sas (@ovidiusas)             Feb 2011 - Dec 2023
-   6.  Maksym Sobolyev (@sobomax)          Mar 2021 - Nov 2023
-   7.  James Stanley                       Mar 2023 - Mar 2023
-   8.  Razvan Crainea (@razvancrainea)     Sep 2011 - Nov 2021
-   9.  Liviu Chircu (@liviuchircu)         Mar 2014 - Jul 2021
-   10. Walter Doekes (@wdoekes)            Apr 2021 - Apr 2021
+   1.  Bogdan-Andrei Iancu (@bogdan-iancu) Dec 2012 - Feb 2026
+   2.  Vlad Paiu (@vladpaiu)               Jul 2011 - Jan 2026
+   3.  Nick Altmann (@nikbyte)             Nov 2015 - Mar 2025
+   4.  okhowang(王沛文)                       Jul 2024 - Jul 2024
+   5.  James Stanley                       Dec 2023 - Jun 2024
+   6.  Ovidiu Sas (@ovidiusas)             Feb 2011 - Dec 2023
+   7.  Maksym Sobolyev (@sobomax)          Mar 2021 - Nov 2023
+   8.  James Stanley                       Mar 2023 - Mar 2023
+   9.  Razvan Crainea (@razvancrainea)     Sep 2011 - Nov 2021
+   10. Liviu Chircu (@liviuchircu)         Mar 2014 - Jul 2021
 
-   All remaining contributors: sagarmalam, Vlad Patrascu
-   (@rvlad-patrascu), Peter Lemenkov (@lemenkov), Vlad Paiu
-   (@vladpaiu).
+   All remaining contributors: Walter Doekes (@wdoekes),
+   sagarmalam, Vlad Patrascu (@rvlad-patrascu), Peter Lemenkov
+   (@lemenkov).
 
    (1) including any documentation-related commits, excluding
    merge commits
@@ -576,10 +797,10 @@ Chapter 3. Documentation
 
 3.1. Contributors
 
-   Last edited by: Bogdan-Andrei Iancu (@bogdan-iancu), Vlad
-   Patrascu (@rvlad-patrascu), Ovidiu Sas (@ovidiusas), Razvan
-   Crainea (@razvancrainea), Peter Lemenkov (@lemenkov), Liviu
-   Chircu (@liviuchircu).
+   Last edited by: Bogdan-Andrei Iancu (@bogdan-iancu), Vlad Paiu
+   (@vladpaiu), Vlad Patrascu (@rvlad-patrascu), Ovidiu Sas
+   (@ovidiusas), Razvan Crainea (@razvancrainea), Peter Lemenkov
+   (@lemenkov), Liviu Chircu (@liviuchircu).
 
    Documentation Copyrights:
 

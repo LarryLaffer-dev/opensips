@@ -25,8 +25,11 @@
 
 #include "../../dprint.h"
 #include "../../async.h"
+#include "../../action.h"
 #include "../../context.h"
 #include "../../reactor_defs.h"
+#include "../../route_trace.h"
+#include <time.h>
 #include "h_table.h"
 #include "t_lookup.h"
 #include "t_msgbuilder.h"
@@ -36,6 +39,8 @@
 typedef struct _async_tm_ctx {
 	/* generic async context - MUST BE FIRST */
 	async_ctx  async;
+	route_trace_ctx_t parent_ctx;
+	int parent_ctx_set;
 	/* the script route to be used to continue after the resume function;
 	 * this is a reference in shm mem, that needs separated free */
 	struct script_route_ref *resume_route;
@@ -93,6 +98,7 @@ int t_resume_async_request(int fd, void*param, int was_timeout)
 	else
 		LM_DBG("resuming request without a fd, transaction %p \n", t);
 
+
 	/* prepare for resume route, by filling in a phony UAC structure to
 	 * trigger the inheritance of the branch specific values */
 	uac.br_flags = getb0flags( t->uas.request ) ;
@@ -125,7 +131,7 @@ int t_resume_async_request(int fd, void*param, int was_timeout)
 	backup_list = set_avp_list( &t->user_avps );
 	/* set default send address to the saved value */
 	backup_si = bind_address;
-	bind_address = t->uac[0].request.dst.send_sock;
+	bind_address = TM_BRANCH( t, 0).request.dst.send_sock;
 
 	async_status = ASYNC_DONE; /* assume default status as done */
 	/* call the resume function in order to read and handle data */
@@ -186,6 +192,8 @@ route:
 			ctx->resume_route->name.s);
 	} else {
 		swap_route_type(route, ctx->route_type);
+		if (ctx->parent_ctx_set)
+			route_trace_set_ctx(&ctx->parent_ctx);
 		run_resume_route( ctx->resume_route, &faked_req, 1);
 		set_route_type(route);
 	}
@@ -237,6 +245,7 @@ int t_resume_async_reply(int fd, void*param, int was_timeout)
 		LM_DBG("resuming reply without a fd, transaction %p \n", t);
 
 
+
 	/* enviroment setting */
 	current_processing_ctx = ctx->msg_ctx;
 	backup_t = get_t();
@@ -251,7 +260,7 @@ int t_resume_async_reply(int fd, void*param, int was_timeout)
 	set_t( t );
 
 	msg_status=ctx->reply->REPLY_STATUS;
-	reply_uac=&t->uac[branch];
+	reply_uac=&TM_BRANCH( t, branch);
 	LM_DBG("org. status uas=%d, uac[%d]=%d local=%d is_invite=%d)\n",
 		t->uas.status, branch, reply_uac->last_received,
 		is_local(t), is_invite(t));
@@ -332,6 +341,8 @@ route:
 			ctx->resume_route->name.s);
 	} else {
 		swap_route_type(route, ctx->route_type);
+		if (ctx->parent_ctx_set)
+			route_trace_set_ctx(&ctx->parent_ctx);
 		/* do not run any post script callback, we are a reply */
 		run_resume_route( ctx->resume_route, ctx->reply, 0);
 		set_route_type(route);
@@ -452,6 +463,22 @@ int t_handle_async(struct sip_msg *msg, struct action* a,
 
 	memset(ctx,0,sizeof(async_tm_ctx));
 	ctx->async.timeout_s = timeout;
+	ctx->parent_ctx_set = route_trace_get_ctx(&ctx->parent_ctx);
+	if (ctx->parent_ctx_set) {
+		struct timespec ts;
+		int have_sys = 0;
+		int have_steady = 0;
+		if (clock_gettime(CLOCK_REALTIME, &ts) == 0) {
+			ctx->parent_ctx.start_system_ns = ((uint64_t)ts.tv_sec * 1000000000ULL) + (uint64_t)ts.tv_nsec;
+			have_sys = 1;
+		}
+		if (clock_gettime(CLOCK_MONOTONIC, &ts) == 0) {
+			ctx->parent_ctx.start_steady_ns = ((uint64_t)ts.tv_sec * 1000000000ULL) + (uint64_t)ts.tv_nsec;
+			have_steady = 1;
+		}
+		if (have_sys && have_steady)
+			ctx->parent_ctx.has_start_time = 1;
+	}
 
 	async_status = ASYNC_NO_IO; /*assume default status "no IO done" */
 	return_code = ((const acmd_export_t*)(a->elem[0].u.data_const))->function(msg,
@@ -608,4 +635,3 @@ resume:
 	/* the triggering route is terminated and whole script ended */
 	return 0;
 }
-

@@ -660,6 +660,7 @@ static void run_create_cb_all(struct b2b_callback *cb, int etype)
 
 				if (bin_append_buffer(&storage, &dlg->storage) < 0) {
 					LM_ERR("Failed to build entity storage buffer\n");
+					bin_free_packet(&storage);
 					return;
 				}
 
@@ -741,6 +742,8 @@ int b2b_prescript_f(struct sip_msg *msg, void *uparam)
 	int b2b_cb_flags = 0;
 	unsigned int ua_flags = 0;
 	int ua_ev_type = -1;
+
+	storage.buffer.s = NULL;
 
 	/* check if a b2b request */
 	if (parse_headers(msg, HDR_EOH_F, 0) < 0)
@@ -1434,14 +1437,11 @@ run_cb:
 			replicate_entity_delete(dlg, etype, hash_index, &storage);
 	}
 
-	if (b2b_ev != -1 && storage.buffer.s)
-		bin_free_packet(&storage);
-
 	if ((ua_flags&UA_FL_IS_UA_ENTITY) && dlg_state == B2B_TERMINATED) {
 		if (ua_send_reply(etype, &b2b_key, METHOD_BYE, 200, &str_init("OK"),
 			NULL, NULL, NULL) < 0) {
 			LM_ERR("Failed to send 200 OK reply\n");
-			return SCB_DROP_MSG;
+			goto end;
 		}
 
 		if (ua_entity_delete(etype, &b2b_key, b2be_db_mode == WRITE_BACK, 1) < 0)
@@ -1450,6 +1450,9 @@ run_cb:
 
 done:
 	lock_release(&table[hash_index].lock);
+end:
+	if (b2b_ev != -1 && storage.buffer.s)
+		bin_free_packet(&storage);
 	return SCB_DROP_MSG;
 }
 
@@ -2360,7 +2363,7 @@ int b2b_send_indlg_auth_req(int statuscode, struct authenticate_body *auth,
 		memset(&auth_nc_cnonce, 0,
 				sizeof(struct authenticate_nc_cnonce));
 		if (uac_auth_api._do_uac_auth(&msg_body, &t->method,
-				&t->uac[0].uri, crd, auth, &auth_nc_cnonce,
+				&TM_BRANCH(t,0).uri, crd, auth, &auth_nc_cnonce,
 				&response) != 0)
 		{
 			LM_ERR("failed in do_uac_auth()\n");
@@ -2368,7 +2371,7 @@ int b2b_send_indlg_auth_req(int statuscode, struct authenticate_body *auth,
 			return RETURN_GOTO_ERROR;
 		}
 		new_hdr = uac_auth_api._build_authorization_hdr(statuscode,
-				&t->uac[0].uri, crd, auth,
+				&TM_BRANCH(t,0).uri, crd, auth,
 				&auth_nc_cnonce, &response);
 		if (!new_hdr)
 		{
@@ -2377,7 +2380,7 @@ int b2b_send_indlg_auth_req(int statuscode, struct authenticate_body *auth,
 			return RETURN_GOTO_ERROR;
 		}
 		LM_DBG("auth is [%.*s]\n", new_hdr->len, new_hdr->s);
-		if (build_extra_headers_from_msg(t->uac[0].request.buffer,
+		if (build_extra_headers_from_msg(TM_BRANCH(t,0).request.buffer,
 			new_hdr, &extra_headers, &body) < 0 ) {
 			LM_ERR("failed to build extra msgs after auth\n");
 			dlg->state = B2B_TERMINATED;
@@ -3296,7 +3299,7 @@ void b2b_tm_cback(struct cell *t, b2b_table htable, struct tmcb_params *ps)
 
 					/* run the b2b route */
 					if(ref_script_route_is_valid(reply_route_ref)) {
-						msg->flags = t->uac[0].br_flags;
+						msg->flags = TM_BRANCH(t,0).br_flags;
 						swap_route_type(old_route_type, ONREPLY_ROUTE);
 						run_top_route(sroutes->request[reply_route_ref->idx], msg);
 						set_route_type(old_route_type);
@@ -3363,7 +3366,7 @@ void b2b_tm_cback(struct cell *t, b2b_table htable, struct tmcb_params *ps)
 
 					/* run the b2b route */
 					if(ref_script_route_is_valid(reply_route_ref)) {
-						msg->flags = t->uac[0].br_flags;
+						msg->flags = TM_BRANCH(t,0).br_flags;
 						swap_route_type(old_route_type, ONREPLY_ROUTE);
 						run_top_route(sroutes->request[reply_route_ref->idx], msg);
 						set_route_type(old_route_type);
@@ -3411,7 +3414,7 @@ dummy_reply:
 			parse_method(cb.method.s, cb.method.s + cb.method.len,
 					(unsigned int *)&cb.method_id);
 
-			dummy_msg.rcv.bind_address = t->uac[0].request.dst.send_sock;
+			dummy_msg.rcv.bind_address = TM_BRANCH(t,0).request.dst.send_sock;
 			dummy_msg.rcv.proto = dummy_msg.rcv.bind_address->proto;
 			dummy_msg.rcv.src_port = dummy_msg.rcv.dst_port
 				= dummy_msg.rcv.bind_address->port_no;
@@ -3502,6 +3505,9 @@ dummy_reply:
 				}
 				if(dlg->callid.s==0 || dlg->callid.len==0)
 					dlg->callid = msg->callid->body;
+				/* seed the CALLER cseq with what was received in 200 OK */
+				dlg->cseq[CALLER_LEG] = leg->cseq;
+				dlg->last_invite_cseq =  leg->cseq;
 				if(b2b_send_req(dlg, etype, leg, &ack, 0, 0) < 0)
 				{
 					LM_ERR("Failed to send ACK request\n");
@@ -3742,7 +3748,7 @@ done:
 done1:
 	/* run the b2b route */
 	if(ref_script_route_is_valid(reply_route_ref)) {
-		msg->flags = t->uac[0].br_flags;
+		msg->flags = TM_BRANCH(t,0).br_flags;
 		swap_route_type(old_route_type, ONREPLY_ROUTE);
 		run_top_route(sroutes->request[reply_route_ref->idx], msg);
 		set_route_type(old_route_type);
