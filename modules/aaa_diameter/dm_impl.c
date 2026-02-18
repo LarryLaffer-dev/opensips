@@ -703,19 +703,48 @@ static int dm_receive_msg(struct msg **_msg, struct avp * avp, struct session * 
 	hash_remove_key(pending_replies, tid);
 	hash_unlock(pending_replies, hentry);
 
+	rpl_cond->rpl.is_error = 0;
+
+	rc = fd_msg_search_avp(msg, dm_dict.Result_Code, &a);
+	if (rc == 0 && a) {
+		rc = fd_msg_avp_hdr(a, &h);
+		if (rc == 0) {
+			rpl_cond->rpl.rc = h->avp_value->u32;
+			LM_DBG("Result-Code: %u\n", h->avp_value->u32);
+			if (h->avp_value->u32 < 2000 || h->avp_value->u32 >= 3000)
+				rpl_cond->rpl.is_error = 1;
+		}
+	}
+
+	rc = fd_msg_search_avp(msg, dm_dict.Experimental_Result, &a);
+	if (rc == 0 && a) {
+		struct avp *child = NULL;
+		fd_msg_browse(a, MSG_BRW_FIRST_CHILD, &child, NULL);
+		while (child) {
+			rc = fd_msg_avp_hdr(child, &h);
+			if (rc == 0) {
+				if (h->avp_code == 298) {
+					rpl_cond->rpl.experimental_rc = h->avp_value->u32;
+					LM_DBG("Experimental-Result-Code: %u\n", h->avp_value->u32);
+					rpl_cond->rpl.is_error = 1;
+				} else if (h->avp_code == 266) {
+					rpl_cond->rpl.vendor_id = h->avp_value->u32;
+					LM_DBG("Experimental-Result Vendor-Id: %u\n", h->avp_value->u32);
+				}
+			}
+			fd_msg_browse(child, MSG_BRW_NEXT, &child, NULL);
+		}
+	}
+
 	fd_msg_search_avp(msg, dm_dict.Error_Message, &a);
 	if (a) {
 		rpl_cond->rpl.is_error = 1;
 		rc = fd_msg_avp_hdr(a, &h);
-		if (rc != 0) {
-			goto out;
-		}
-
-		LM_DBG("transaction failed (%.*s)\n",
-			(int)h->avp_value->os.len, h->avp_value->os.data);
-	} else {
-		rpl_cond->rpl.is_error = 0;
+		if (rc == 0)
+			LM_DBG("Error-Message: %.*s\n",
+				(int)h->avp_value->os.len, h->avp_value->os.data);
 	}
+
 	dm_cond_signal(rpl_cond);
 
 out:
@@ -2002,7 +2031,8 @@ static int _dm_get_message_reply(struct dm_cond *cond, diameter_reply *rpl)
 	return (cond->rpl.is_error?-1:0);
 }
 
-int _dm_get_message_response(struct dm_cond *cond, char **rpl_avps)
+int _dm_get_message_response(struct dm_cond *cond, char **rpl_avps,
+		diameter_reply *rpl_out)
 {
 	cJSON *obj;
 	diameter_reply rpl;
@@ -2013,6 +2043,10 @@ int _dm_get_message_response(struct dm_cond *cond, char **rpl_avps)
 		*rpl_avps = cJSON_PrintUnformatted(obj);
 		LM_DBG("AVPs: %s\n", *rpl_avps);
 	}
+
+	if (rpl_out)
+		*rpl_out = rpl;
+
 	return rc;
 }
 

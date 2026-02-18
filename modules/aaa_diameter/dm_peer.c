@@ -588,6 +588,10 @@ static int dm_prepare_globals(void)
 	      "Result-Code", &dm_dict.Result_Code, ENOENT));
 	FD_CHECK(fd_dict_search(fd_g_config->cnf_dict, DICT_AVP, AVP_BY_NAME,
 	      "Error-Message", &dm_dict.Error_Message, ENOENT));
+	FD_CHECK(fd_dict_search(fd_g_config->cnf_dict, DICT_AVP, AVP_BY_NAME,
+	      "Experimental-Result", &dm_dict.Experimental_Result, ENOENT));
+	FD_CHECK(fd_dict_search(fd_g_config->cnf_dict, DICT_AVP, AVP_BY_NAME,
+	      "Experimental-Result-Code", &dm_dict.Experimental_Result_Code, ENOENT));
 
 	/* accounting AVPs */
 	FD_CHECK(fd_dict_search(fd_g_config->cnf_dict, DICT_AVP, AVP_BY_NAME,

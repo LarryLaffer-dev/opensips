@@ -71,6 +71,8 @@ struct _dm_dict {
 	struct dict_object *Destination_Realm;
 	struct dict_object *Result_Code;
 	struct dict_object *Error_Message;
+	struct dict_object *Experimental_Result;
+	struct dict_object *Experimental_Result_Code;
 
 	struct dict_object *Accounting_Record_Type;
 	struct dict_object *Accounting_Record_Number;
@@ -171,7 +173,8 @@ int dm_build_avps(struct list_head *subavps, cJSON *array);
 int dm_send_message(aaa_conn *_, aaa_message *req, aaa_message **__);
 int _dm_send_message(aaa_conn *_, aaa_message *req, struct dm_cond **reply_cond);
 int _dm_send_message_async(aaa_conn *_, aaa_message *req, int *fd);
-int _dm_get_message_response(struct dm_cond *cond, char **rpl_avps);
+int _dm_get_message_response(struct dm_cond *cond, char **rpl_avps,
+		diameter_reply *rpl_out);
 void _dm_release_message_response(struct dm_cond *cond, char *rpl_avps);
 int dm_destroy_message(aaa_conn *con, aaa_message *msg);
 void _dm_destroy_message(aaa_message *msg);
