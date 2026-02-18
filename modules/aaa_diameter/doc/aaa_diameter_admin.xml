@@ -279,6 +279,7 @@ modparam("aaa_diameter", "max_json_log_size", 4096)
 		<itemizedlist>
 		<listitem>
 			<para><emphasis role='bold'>1</emphasis> - Success
+			(the Diameter Answer has a 2xxx Result-Code)
 			</para>
 		</listitem>
 		<listitem>
@@ -289,6 +290,15 @@ modparam("aaa_diameter", "max_json_log_size", 4096)
 			<para><emphasis role='bold'>-2</emphasis> - Request timeout
 			(the <xref linkend="param_answer_timeout"/> was exceeded
 			before an Answer could be processed)
+			</para>
+		</listitem>
+		<listitem>
+			<para><emphasis role='bold'>-3</emphasis> - Diameter error
+			reply (the Answer has a non-2xxx Result-Code or
+			an Experimental-Result AVP).  The
+			<xref linkend="pv_diameter_result_code"/> and
+			<xref linkend="pv_diameter_experimental_result_code"/>
+			pseudo-variables can be used to inspect the exact error codes.
 			</para>
 		</listitem>
 		</itemizedlist>
@@ -388,6 +398,13 @@ $var(payload) = "[
 ]";
 
 $var(rc) = dm_send_request(42, 92001, $var(payload), $var(rpl_avps));
+if ($var(rc) == -3) {
+	xlog("Diameter error: Result-Code=$diameter_result_code, \
+		Experimental-Result-Code=$diameter_experimental_result_code\n");
+} else if ($var(rc) &lt; 0) {
+	xlog("dm_send_request failed: $var(rc)\n");
+}
+
 xlog("rc: $var(rc), AVPs: $var(rpl_avps)\n");
 $json(avps) := $var(rpl_avps);
 
@@ -515,15 +532,57 @@ $var(payload) = "[
 		]}
 ]";
 
-async(dm_send_request(42, 92001, $var(payload), $var(rpl_avps), dm_reply);
+async(dm_send_request(42, 92001, $var(payload), $var(rpl_avps)), dm_reply);
 
 route[dm_reply] {
 	xlog("rc: $retcode, AVPs: $var(rpl_avps)\n");
+	if ($retcode == -3) {
+		xlog("Diameter error: Result-Code=$diameter_result_code, \
+			Experimental-Result-Code=$diameter_experimental_result_code\n");
+	}
 	$json(avps) := $var(rpl_avps);
 }
 
 </programlisting>
 		</example>
+	</section>
+
+	</section>
+
+	<section id="exported_pseudo_variables" xreflabel="Exported Pseudo-Variables">
+	<title>Exported Pseudo-Variables</title>
+
+	<section id="pv_diameter_result_code" xreflabel="$diameter_result_code">
+		<title><varname>$diameter_result_code</varname></title>
+		<para>
+		Set after a <xref linkend="func_dm_send_request"/> call completes
+		(both synchronous and asynchronous).  Contains the value of the
+		<emphasis>Result-Code</emphasis> AVP (268) from the Diameter Answer,
+		or <emphasis>0</emphasis> if the AVP was not present.
+		</para>
+		<para>
+		This is useful for distinguishing between different Diameter error
+		conditions (e.g. 3xxx protocol errors, 4xxx transient failures,
+		5xxx permanent failures).
+		</para>
+	</section>
+
+	<section id="pv_diameter_experimental_result_code" xreflabel="$diameter_experimental_result_code">
+		<title><varname>$diameter_experimental_result_code</varname></title>
+		<para>
+		Set after a <xref linkend="func_dm_send_request"/> call completes
+		(both synchronous and asynchronous).  Contains the value of the
+		<emphasis>Experimental-Result-Code</emphasis> AVP (298) extracted
+		from within the grouped <emphasis>Experimental-Result</emphasis>
+		AVP (297) of the Diameter Answer, or <emphasis>0</emphasis> if
+		the AVP was not present.
+		</para>
+		<para>
+		The Experimental-Result AVP is used by many Diameter applications
+		(e.g. 3GPP/IMS) to convey vendor-specific result codes.  When
+		this AVP is present, the <xref linkend="func_dm_send_request"/>
+		function will return <emphasis role='bold'>-3</emphasis>.
+		</para>
 	</section>
 
 	</section>
