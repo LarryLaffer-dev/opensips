@@ -720,15 +720,17 @@ static int dm_receive_msg(struct msg **_msg, struct avp * avp, struct session * 
 	if (rc == 0 && a) {
 		struct avp *child = NULL;
 		fd_msg_browse(a, MSG_BRW_FIRST_CHILD, &child, NULL);
+
 		while (child) {
 			rc = fd_msg_avp_hdr(child, &h);
 			if (rc == 0) {
-				if (h->avp_code == 298) {
-					rpl_cond->rpl.experimental_rc = h->avp_value->u32;
-					LM_DBG("Experimental-Result-Code: %u\n", h->avp_value->u32);
+			if (h->avp_code == 298 && h->avp_value) {
+				rpl_cond->experimental_rc = h->avp_value->u32;
+				LM_DBG("Experimental-Result-Code: %u\n", h->avp_value->u32);
+				if (h->avp_value->u32 < 2000 || h->avp_value->u32 >= 3000)
 					rpl_cond->rpl.is_error = 1;
-				} else if (h->avp_code == 266) {
-					rpl_cond->rpl.vendor_id = h->avp_value->u32;
+				} else if (h->avp_code == 266 && h->avp_value) {
+					rpl_cond->vendor_id = h->avp_value->u32;
 					LM_DBG("Experimental-Result Vendor-Id: %u\n", h->avp_value->u32);
 				}
 			}
@@ -2031,8 +2033,7 @@ static int _dm_get_message_reply(struct dm_cond *cond, diameter_reply *rpl)
 	return (cond->rpl.is_error?-1:0);
 }
 
-int _dm_get_message_response(struct dm_cond *cond, char **rpl_avps,
-		diameter_reply *rpl_out)
+int _dm_get_message_response(struct dm_cond *cond, char **rpl_avps)
 {
 	cJSON *obj;
 	diameter_reply rpl;
@@ -2043,10 +2044,6 @@ int _dm_get_message_response(struct dm_cond *cond, char **rpl_avps,
 		*rpl_avps = cJSON_PrintUnformatted(obj);
 		LM_DBG("AVPs: %s\n", *rpl_avps);
 	}
-
-	if (rpl_out)
-		*rpl_out = rpl;
-
 	return rc;
 }
 

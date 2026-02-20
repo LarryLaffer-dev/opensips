@@ -141,6 +141,9 @@ struct dm_cond {
 	} sync;
 
 	diameter_reply rpl;
+
+	int experimental_rc;   /* Experimental-Result-Code AVP (298) */
+	int vendor_id;         /* Vendor-Id from Experimental-Result (266) */
 };
 int init_mutex_cond(pthread_mutex_t *mutex, pthread_cond_t *cond);
 
@@ -173,8 +176,7 @@ int dm_build_avps(struct list_head *subavps, cJSON *array);
 int dm_send_message(aaa_conn *_, aaa_message *req, aaa_message **__);
 int _dm_send_message(aaa_conn *_, aaa_message *req, struct dm_cond **reply_cond);
 int _dm_send_message_async(aaa_conn *_, aaa_message *req, int *fd);
-int _dm_get_message_response(struct dm_cond *cond, char **rpl_avps,
-		diameter_reply *rpl_out);
+int _dm_get_message_response(struct dm_cond *cond, char **rpl_avps);
 void _dm_release_message_response(struct dm_cond *cond, char *rpl_avps);
 int dm_destroy_message(aaa_conn *con, aaa_message *msg);
 void _dm_destroy_message(aaa_message *msg);

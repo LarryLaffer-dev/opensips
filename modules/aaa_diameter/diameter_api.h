@@ -34,9 +34,7 @@
 typedef struct {
 	cJSON *json;
 	int is_error;
-	int rc;                /* Result-Code AVP (268) */
-	int experimental_rc;   /* Experimental-Result-Code AVP (298) */
-	int vendor_id;         /* Vendor-Id from Experimental-Result (266) */
+	int rc;
 } diameter_reply;
 
 /*

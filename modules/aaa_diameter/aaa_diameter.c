@@ -357,26 +357,21 @@ static int dm_send_request(struct sip_msg *msg, int *app_id, int *cmd_code,
 	if (_dm_send_message(NULL, dmsg, &rpl) != 0)
 		goto ret;
 
-	{
-		diameter_reply dm_rpl;
-		memset(&dm_rpl, 0, sizeof dm_rpl);
-		rc = _dm_get_message_response(rpl,
-				(rpl_avps_pv ? &rpl_avps : NULL), &dm_rpl);
+	rc = _dm_get_message_response(rpl, (rpl_avps_pv ? &rpl_avps : NULL));
 
-		dm_last_result_code = dm_rpl.rc;
-		dm_last_experimental_rc = dm_rpl.experimental_rc;
+	dm_last_result_code = rpl->rpl.rc;
+	dm_last_experimental_rc = rpl->experimental_rc;
 
-		if (rpl_avps_pv) {
-			pv_value_t val = {(str){rpl_avps, strlen(rpl_avps)}, 0, PV_VAL_STR};
-			if (pv_set_value(msg, rpl_avps_pv, 0, &val) != 0)
-				LM_ERR("failed to set output rpl_avps pv to: %s\n", rpl_avps);
-			_dm_release_message_response(rpl, rpl_avps);
-		}
+	if (rpl_avps_pv) {
+		pv_value_t val = {(str){rpl_avps, strlen(rpl_avps)}, 0, PV_VAL_STR};
+		if (pv_set_value(msg, rpl_avps_pv, 0, &val) != 0)
+			LM_ERR("failed to set output rpl_avps pv to: %s\n", rpl_avps);
+		_dm_release_message_response(rpl, rpl_avps);
+	}
 
-		if (rc != 0) {
-			LM_ERR("Diameter request failed (rc: %d)\n", rc);
-			return -3;
-		}
+	if (rc != 0) {
+		LM_ERR("Diameter request failed (rc: %d)\n", rc);
+		return -3;
 	}
 
 	return 1;
@@ -541,15 +536,12 @@ static int dm_send_request_async_reply(int fd,
 		LM_ERR("could not resume async route!\n");
 		goto error;
 	}
-	{
-		diameter_reply dm_rpl;
-		memset(&dm_rpl, 0, sizeof dm_rpl);
-		ret = _dm_get_message_response(amsg->cond,
-				(amsg->ret ? &rpl_avps : NULL), &dm_rpl);
 
-		dm_last_result_code = dm_rpl.rc;
-		dm_last_experimental_rc = dm_rpl.experimental_rc;
-	}
+	ret = _dm_get_message_response(amsg->cond,
+			(amsg->ret ? &rpl_avps : NULL));
+
+	dm_last_result_code = amsg->cond->rpl.rc;
+	dm_last_experimental_rc = amsg->cond->experimental_rc;
 
 	if (ret == 0)
 		ret = 1;
