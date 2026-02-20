@@ -66,6 +66,7 @@ int dm_init_peer(void)
 
 	INIT_LIST_HEAD(&dm_unreplied_req);
 	lock_init(&dm_unreplied_req_lk);
+	lock_init(&dm_inbound_req_lk);
 	return 0;
 }
 
