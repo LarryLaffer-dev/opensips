@@ -131,7 +131,8 @@ int t_resume_async_request(int fd, void*param, int was_timeout)
 	backup_list = set_avp_list( &t->user_avps );
 	/* set default send address to the saved value */
 	backup_si = bind_address;
-	bind_address = TM_BRANCH( t, 0).request.dst.send_sock;
+	if (t->uac[0])
+		bind_address = TM_BRANCH( t, 0).request.dst.send_sock;
 
 	async_status = ASYNC_DONE; /* assume default status as done */
 	/* call the resume function in order to read and handle data */
