@@ -356,8 +356,20 @@ static void rtp_relay_b2b_end(void *param)
 static int rtp_relay_sess_b2b_success(struct rtp_relay_ctx *ctx,
 	struct rtp_relay_sess *sess)
 {
+	int ltype;
 	rtp_sess_set_success(sess);
 	ctx->established = sess;
+	/* Clear the saved offer bodies now that the session is established.
+	 * They were only needed to give auth-retry INVITEs the original IMS SDP.
+	 * Clearing here ensures that subsequent re-INVITEs use their own fresh SDP
+	 * rather than the stale original from the initial INVITE. */
+	for (ltype = RTP_RELAY_CALLER; ltype <= RTP_RELAY_CALLEE; ltype++) {
+		if (sess->legs[ltype] &&
+				sess->legs[ltype]->flags[RTP_RELAY_FLAGS_BODY].s) {
+			shm_free(sess->legs[ltype]->flags[RTP_RELAY_FLAGS_BODY].s);
+			memset(&sess->legs[ltype]->flags[RTP_RELAY_FLAGS_BODY], 0, sizeof(str));
+		}
+	}
 	if (!rtp_relay_ctx_established(ctx)) {
 		lock_start_write(rtp_relay_contexts_lock);
 		list_add(&ctx->list, rtp_relay_contexts);
@@ -614,6 +626,28 @@ static void rtp_relay_b2b_reply_free(void *param)
 static void rtp_relay_b2b_tm_reply(struct cell* t, int type, struct tmcb_params *p)
 {
 	struct rtp_relay_b2b_reply *rpl = (*p->param);
+
+	/* When a B2B outgoing INVITE is challenged with 401/407, the B2B module
+	 * transparently re-sends the INVITE with auth credentials in a new local
+	 * transaction.  handle_rtp_relay_ctx_leg_reply() would see status >= 300
+	 * and call rtp_relay_ctx_free_sess(), destroying the session before the
+	 * retry transaction fires TMCB_LOCAL_REQUEST_OUT — causing the "unknown
+	 * session" error.  For auth challenges we therefore:
+	 *   1. delete the rtpengine allocation made for the rejected attempt, and
+	 *   2. reset the session's ongoing/pending flags so the retry will
+	 *      issue a fresh rtp_relay_offer() rather than rtp_relay_answer().
+	 * The session itself is kept alive in ctx->sessions for the retry. */
+	if (p->rpl && p->rpl != FAKED_REPLY &&
+			(p->rpl->REPLY_STATUS == 401 || p->rpl->REPLY_STATUS == 407)) {
+		struct rtp_relay_session info;
+		memset(&info, 0, sizeof info);
+		info.msg = p->rpl;
+		if (!rtp_sess_late(rpl->sess))
+			rtp_relay_delete(&info, rpl->ctx, rpl->sess, rpl->type);
+		rtp_sess_reset_ongoing(rpl->sess);
+		rtp_sess_reset_pending(rpl->sess);
+		return;
+	}
 	handle_rtp_relay_ctx_leg_reply(rpl->ctx, p->rpl, NULL, rpl->sess, rpl->type);
 }
 
@@ -736,10 +770,27 @@ static void rtp_relay_b2b_tm_req(struct cell* t, int type, struct tmcb_params *p
 
 	LM_RTP_DBG("sess=%p late=%d ongoing=%d index=%d\n",
 			sess, rtp_sess_late(sess), rtp_sess_ongoing(sess), sess->index);
-	if (!rtp_sess_late(sess) && !rtp_sess_ongoing(sess))
+	if (!rtp_sess_late(sess) && !rtp_sess_ongoing(sess)) {
+		/* Save the original offer body (first offer attempt) into the leg's BODY
+		 * flag before calling rtp_relay_offer.
+		 *
+		 * When the carrier challenges with 401/407, B2B transparently retries the
+		 * INVITE, but reuses the SDP that was already modified by the first
+		 * rtp_relay_offer (which added transcoded codecs and replaced IPs via
+		 * lumps).  rtp_relay_offer() prefers the stored leg body over the current
+		 * message body, so saving the original pure IMS SDP here causes the retry
+		 * offer to reach rtpengine with the correct un-modified AMR/AMR-WB SDP,
+		 * which results in a properly transcoded session being set up. */
+		if (info.body && info.body->s && info.body->len &&
+				sess->legs[ltype] && !sess->legs[ltype]->flags[RTP_RELAY_FLAGS_BODY].s) {
+			str _saved;
+			if (shm_str_dup(&_saved, info.body) == 0)
+				sess->legs[ltype]->flags[RTP_RELAY_FLAGS_BODY] = _saved;
+		}
 		rtp_relay_offer(&info, ctx, sess, ltype, NULL);
-	else
+	} else {
 		rtp_relay_answer(&info, ctx, sess, ltype, NULL);
+	}
 }
 
 static void rtp_relay_b2b_new_local(struct cell* t, int type, struct tmcb_params *ps)
@@ -1277,6 +1328,7 @@ static int rtp_relay_answer(struct rtp_relay_session *info,
 			(ctx && ctx->flags.s?ctx->flags.s:NULL),
 			RTP_RELAY_FLAGS_S(leg, RTP_RELAY_FLAGS_SELF),
 			RTP_RELAY_FLAGS_S(RTP_RELAY_PEER(leg), RTP_RELAY_FLAGS_PEER));
+
 	if (sess->relay->funcs.answer(info, &sess->server, body,
 			RTP_RELAY_FLAGS(RTP_RELAY_PEER(leg), RTP_RELAY_FLAGS_IP),
 			RTP_RELAY_FLAGS(RTP_RELAY_PEER(leg), RTP_RELAY_FLAGS_TYPE),
