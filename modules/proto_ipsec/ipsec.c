@@ -985,6 +985,17 @@ int ipsec_sa_add(struct mnl_socket *sock, struct ipsec_ctx *ctx,
 
 void ipsec_sa_rm_all(struct ipsec_socket *sock, struct ipsec_ctx *ctx)
 {
+	/*
+	 * Kernel XFRM allows exactly one policy per (selector, dir).  When an
+	 * old ctx is torn down in the re-auth 401 handler before the new ctx
+	 * installs its SAs, the TMP-timer later reaps the old ctx and would
+	 * attempt to delete the *same* selectors - which now belong to the
+	 * new ctx.  Guard the second call so it cannot destroy the active
+	 * policies of the successor ctx.
+	 */
+	if (ctx->sa_removed)
+		return;
+	ctx->sa_removed = 1;
 	ipsec_sa_rm(sock, ctx, IPSEC_POLICY_IN, 0);
 	ipsec_sa_rm(sock, ctx, IPSEC_POLICY_OUT, 0);
 	ipsec_sa_rm(sock, ctx, IPSEC_POLICY_IN, 1);
