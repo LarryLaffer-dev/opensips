@@ -3,7 +3,10 @@
 set -e
 
 cd /tmp/build/opensips
-git submodule update --init
+# If submodules were copied in already, skip the init step (host-side build).
+if [ ! -f modules/tls_wolfssl/lib/wolfssl/configure.ac ]; then
+    git submodule update --init
+fi
 mkdir /tmp/deb/
 make deb-orig-tar
 #cp ../opensips_4.0.0.orig.tar.gz ../opensips_3.6.0-dev.orig.tar.gz
