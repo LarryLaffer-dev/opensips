@@ -99,6 +99,21 @@ struct ipsec_ctx {
 	enum ipsec_state state;
 	struct list_head list;
 	int ref;
+	/*
+	 * Kernel XFRM selector (src_ip, dst_ip, sport, dport) is UNIQUE per
+	 * (dir, type) in the kernel - only ONE policy can exist per selector.
+	 * When a UE re-authenticates while reusing its port_s, the NEW ctx's
+	 * install collides with the OLD ctx's existing kernel policy
+	 * (NLM_F_EXCL fails silently).  We must tear down the OLD ctx's
+	 * kernel SAs BEFORE installing NEW, which happens in
+	 * ipsec_handle_aka_auth() as soon as we detect the 401 re-auth.
+	 *
+	 * Later, when the TMP-timer eventually fires ipsec_ctx_free() on the
+	 * old ctx, it would call ipsec_sa_rm_all() a second time and delete
+	 * the NEW ctx's policies (same selector).  This flag makes the
+	 * second tear-down a no-op.
+	 */
+	int sa_removed;
 };
 
 #define IPSEC_CTX_REF_COUNT_UNSAFE(_ctx, _c) \
