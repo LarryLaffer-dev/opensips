@@ -1880,6 +1880,54 @@ if ( get_dialogs_by_profile("caller",$fU,$avp(dlg_jsons),$avp(dlg_no)) ) {
 	</section>
 
 
+	<section id="func_dlg_end_dlgs_by_val" xreflabel="dlg_end_dlgs_by_val()">
+		<title>
+		<function moreinfo="none">dlg_end_dlgs_by_val(name, value)</function>
+		</title>
+		<para>
+		The function looks up through the whole dialog table for active dialogs
+		(not yet in a deleted state) carrying the dialog value <emphasis>name</emphasis>
+		equal to <emphasis>value</emphasis>, and terminates each matched dialog by
+		sending a BYE to both legs (same teardown as the
+		<emphasis role='bold'><xref linkend="mi_dlg_end_dlg"/></emphasis> MI command).
+		It is typically used to release all ongoing calls of a subscriber when its
+		registration is torn down (for example on a PCRF-signalled IP-CAN bearer loss).
+		</para>
+		<para>
+		In a clustered setup, only the node owning the dialog's sharing tag will emit
+		the BYEs, so the teardown is not duplicated across nodes.
+		</para>
+		<para>
+		NOTE: the function does not require to be called in the context of a dialog.
+		</para>
+		<para>Meaning of the parameters is as follows:</para>
+		<itemizedlist>
+		<listitem>
+			<para><emphasis>name (string)</emphasis> - the name of the dialog value used for the lookup
+			</para>
+		</listitem>
+		<listitem>
+			<para><emphasis>value (var)</emphasis> - variable holding the dialog value to match
+			</para>
+		</listitem>
+		</itemizedlist>
+		<para>
+		This function can be used from any type of route, including event routes.
+		</para>
+		<example>
+		<title><function>dlg_end_dlgs_by_val</function> usage</title>
+		<programlisting format="linespecific">
+...
+# release all calls of a subscriber when its registration is removed
+event_route[E_UL_AOR_DELETE] {
+	dlg_end_dlgs_by_val("served_aor", $param(aor));
+}
+...
+</programlisting>
+		</example>
+	</section>
+
+
 	<section id="func_load_dialog_ctx" xreflabel="load_dialog_ctx()">
 		<title>
 		<function moreinfo="none">load_dialog_ctx( dialog [, id_type] [, active_only])</function>
