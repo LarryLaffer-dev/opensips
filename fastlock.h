@@ -244,6 +244,34 @@ inline static void get_lock(fl_lock_t* lock_struct,  const char* file, const cha
 
 
 /*! \brief
+ * Try to set a lock without blocking.
+ * \param lock the lock that should be set
+ * \return 0 if the lock was acquired, -1 if it is already held
+ * \see tsl
+ */
+#ifndef DBG_LOCK
+inline static int try_get_lock(fl_lock_t* lock)
+{
+#else
+inline static int try_get_lock(fl_lock_t* lock_struct, const char* file, const char* func, unsigned int line)
+{
+	volatile int *lock = &lock_struct->lock;
+#endif
+
+	if (tsl(lock))
+		return -1; /* already held by someone else */
+
+#ifdef DBG_LOCK
+	lock_struct->file = (char*)file;
+	lock_struct->func = (char*)func;
+	lock_struct->line = line;
+#endif
+
+	return 0;
+}
+
+
+/*! \brief
  * Release a lock
  * \param lock the lock that should be released
  */

@@ -279,6 +279,32 @@ inline static void get_lock(fx_lock_t* lock_struct, const char* file, const char
 }
 
 /*! \brief
+ * Try to get a lock without blocking.
+ * \param lock the lock that should be gotten
+ * \return 0 if the lock was acquired, -1 if it is already held
+ */
+#ifndef DBG_LOCK
+inline static int try_get_lock(fx_lock_t* lock)
+{
+#else
+inline static int try_get_lock(fx_lock_t* lock_struct, const char* file, const char* func, unsigned int line)
+{
+	volatile int *lock = &lock_struct->lock;
+#endif
+
+	if (atomic_cmpxchg(lock, 0, 1) != 0)
+		return -1; /* already held */
+
+#ifdef DBG_LOCK
+	lock_struct->file = (char*)file;
+	lock_struct->func = (char*)func;
+	lock_struct->line = line;
+#endif
+
+	return 0;
+}
+
+/*! \brief
  * Release a lock
  * \param lock the lock that should be released
  */

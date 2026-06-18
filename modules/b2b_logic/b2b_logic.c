@@ -29,6 +29,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <unistd.h>
 
 #include "../../sr_module.h"
 #include "../../dprint.h"
@@ -1567,12 +1568,60 @@ error:
 	return NULL;
 }
 
-static b2bl_tuple_t *ctx_search_tuple(struct b2b_context *ctx, int *locked)
+/* Upper bound (in milliseconds) for non-blocking acquisition of the b2b_logic
+ * tuple lock on re-entrant read paths. Sized well above the longest legitimate
+ * hold time (a WRITE_THROUGH b2bl_db_update under the lock) so it never trips on
+ * normal contention - only on an actual lock-ordering deadlock. */
+#define B2BL_AUX_TRYLOCK_MAX_MS 1000
+
+/* Acquire the b2b_logic tuple lock for a read on a re-entrant path without the
+ * risk of an ABBA deadlock against b2b_entities.
+ *
+ * b2b_logic holds this lock while calling into b2b_entities (which locks the
+ * entities hash); b2b_entities, in turn, runs TM callbacks - e.g. rtp_relay -
+ * while holding the entities hash lock, and those callbacks read the b2b_logic
+ * key through this path (b2bl_get_key). Two workers handling two messages of the
+ * same call in opposite directions would otherwise deadlock: one holds the
+ * b2b_logic lock and waits for the entities lock, the other holds the entities
+ * lock and waits here for the b2b_logic lock. Acquiring non-blockingly lets the
+ * read path back off so the peer can make progress and release its lock.
+ *
+ * Returns 1 if the lock is held on return (freshly acquired, or already owned by
+ * this process - re-entrant), 0 if it could not be acquired within the budget.
+ * Mirrors B2BL_LOCK_GET_AUX semantics: when freshly acquired it does NOT set
+ * locked_by, so the matching B2BL_LOCK_RELEASE_AUX releases it. */
+static int b2bl_ctx_trylock_aux(unsigned int hash_index)
+{
+	int i;
+
+	if (b2bl_htable[hash_index].locked_by == process_no)
+		return 1; /* re-entrant: already owned by us via B2BL_LOCK_GET */
+
+	for (i = 0; i < B2BL_AUX_TRYLOCK_MAX_MS; i++) {
+		if (lock_try(&b2bl_htable[hash_index].lock) == 0)
+			return 1;
+		usleep(1000); /* 1 ms */
+	}
+
+	return 0;
+}
+
+static b2bl_tuple_t *ctx_search_tuple(struct b2b_context *ctx, int *locked,
+		int try_lock)
 {
 	b2bl_tuple_t *tuple;
 
 	*locked = 1;
-	B2BL_LOCK_GET_AUX(ctx->hash_index);
+	if (try_lock) {
+		if (!b2bl_ctx_trylock_aux(ctx->hash_index)) {
+			LM_WARN("b2b_logic tuple lock [%u] busy for %dms, backing off to "
+				"avoid deadlock\n", ctx->hash_index, B2BL_AUX_TRYLOCK_MAX_MS);
+			*locked = 0;
+			return NULL;
+		}
+	} else {
+		B2BL_LOCK_GET_AUX(ctx->hash_index);
+	}
 
 	tuple = b2bl_search_tuple_safe(ctx->hash_index, ctx->local_index);
 	if (!tuple) {
@@ -1586,7 +1635,8 @@ static b2bl_tuple_t *ctx_search_tuple(struct b2b_context *ctx, int *locked)
 }
 
 /* get current tuple from the b2b_etities context */
-b2bl_tuple_t *get_entities_ctx_tuple(struct b2b_context *ctx, int *locked)
+b2bl_tuple_t *get_entities_ctx_tuple(struct b2b_context *ctx, int *locked,
+		int try_lock)
 {
 	b2bl_tuple_t *tuple;
 
@@ -1599,17 +1649,17 @@ b2bl_tuple_t *get_entities_ctx_tuple(struct b2b_context *ctx, int *locked)
 			return NULL;
 		}
 
-		tuple = ctx_search_tuple(ctx, locked);
+		tuple = ctx_search_tuple(ctx, locked, try_lock);
 		if (tuple)
 			ctx->init = 1;
 	} else {
-		tuple = ctx_search_tuple(ctx, locked);
+		tuple = ctx_search_tuple(ctx, locked, try_lock);
 	}
 
 	return tuple;
 }
 
-b2bl_tuple_t *get_ctx_tuple(int *locked)
+b2bl_tuple_t *get_ctx_tuple(int *locked, int try_lock)
 {
 	b2bl_tuple_t *tuple;
 	struct b2b_context *ctx;
@@ -1628,10 +1678,10 @@ b2bl_tuple_t *get_ctx_tuple(int *locked)
 			if (!ctx->init)
 				return NULL;
 			else
-				return ctx_search_tuple(ctx, locked);
+				return ctx_search_tuple(ctx, locked, try_lock);
 		}
 
-		tuple = get_entities_ctx_tuple(ctx, locked);
+		tuple = get_entities_ctx_tuple(ctx, locked, try_lock);
 		if (!tuple) {
 			LM_ERR("Failed to get tuple [%.*s] from b2b context\n",
 				ctx->b2bl_key.len, ctx->b2bl_key.s);
@@ -1651,7 +1701,7 @@ int pv_get_b2bl_key(struct sip_msg *msg, pv_param_t *param, pv_value_t *res)
 	b2bl_tuple_t *tuple;
 	int locked = 0;
 
-	tuple = get_ctx_tuple(&locked);
+	tuple = get_ctx_tuple(&locked, 0);
 	if (!tuple) {
 		LM_DBG("Unable to get the tuple from the current context\n");
 		return pv_get_null(msg, param, res);
@@ -1671,7 +1721,7 @@ int pv_get_scenario(struct sip_msg *msg, pv_param_t *param, pv_value_t *res)
 	b2bl_tuple_t *tuple;
 	int locked = 0;
 
-	tuple = get_ctx_tuple(&locked);
+	tuple = get_ctx_tuple(&locked, 0);
 	if (!tuple) {
 		LM_DBG("Unable to get the tuple from the current context\n");
 		return pv_get_null(msg, param, res);
@@ -1750,7 +1800,7 @@ int pv_get_entity(struct sip_msg *msg, pv_param_t *param, pv_value_t *res)
 	int i;
 	int locked = 0;
 
-	tuple = get_ctx_tuple(&locked);
+	tuple = get_ctx_tuple(&locked, 0);
 	if (!tuple) {
 		LM_ERR("Failed to get the tuple from the current context\n");
 		return pv_get_null(msg, param, res);
@@ -2029,12 +2079,12 @@ int get_ctx_vals(struct b2b_ctx_val ***vals, b2bl_tuple_t **tuple, int *locked)
 				*vals = &local_ctx_vals;
 				return 0;
 			} else {
-				*tuple = ctx_search_tuple(ctx, locked);
+				*tuple = ctx_search_tuple(ctx, locked, 0);
 				if (*tuple == NULL)
 					return -1;
 			}
 		} else {
-			*tuple = get_entities_ctx_tuple(ctx, locked);
+			*tuple = get_entities_ctx_tuple(ctx, locked, 0);
 			if (*tuple == NULL) {
 				LM_ERR("Failed to get tuple [%.*s] from b2b context\n",
 					ctx->b2bl_key.len, ctx->b2bl_key.s);
@@ -2184,7 +2234,10 @@ static str *b2bl_get_key(void)
 	static str ret;
 	static char buf[MAX_B2BL_KEY];
 	int locked = 0;
-	b2bl_tuple_t *tuple = get_ctx_tuple(&locked);
+	/* try_lock=1: this is reached from rtp_relay TM callbacks that run while
+	 * b2b_entities holds its hash lock; block-free acquire avoids an ABBA
+	 * deadlock with the b2b_logic->b2b_entities locking order */
+	b2bl_tuple_t *tuple = get_ctx_tuple(&locked, 1);
 
 	if (!tuple)
 		return NULL;
@@ -2220,7 +2273,7 @@ static int b2bl_get_entity_info(str *key, struct sip_msg *msg, int entity, struc
 		if (tuple)
 			locked = 1;
 	} else {
-		tuple = get_ctx_tuple(&locked);
+		tuple = get_ctx_tuple(&locked, 0);
 
 		if (tuple && !locked)
 			B2BL_LOCK_GET_AUX(tuple->hash_index);
