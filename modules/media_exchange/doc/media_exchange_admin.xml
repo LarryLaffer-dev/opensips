@@ -124,6 +124,39 @@
 	</section>
 	</section>
 
+	<section id="exported_parameters" xreflabel="Exported Parameters">
+		<title>Exported Parameters</title>
+		<section id="param_hold_media_direction" xreflabel="hold_media_direction">
+			<title><varname>hold_media_direction</varname> (string)</title>
+			<para>
+				SDP direction written into the answer/re-INVITE sent to the
+				party that a media exchange puts on hold (for example the
+				holder during Music-on-Hold). Accepted values are
+				<emphasis>inactive</emphasis>, <emphasis>recvonly</emphasis>,
+				<emphasis>sendonly</emphasis> and <emphasis>sendrecv</emphasis>.
+			</para>
+			<para>
+				The default <emphasis>inactive</emphasis> preserves the
+				historical behaviour. Setting <emphasis>recvonly</emphasis>
+				keeps the held-on UE's RTCP supervision consistent so it does
+				not tear the call down on RTCP timeout (RFC 3264 / RFC 3550,
+				GSMA IR.92 / 3GPP TS 26.114) when an external media keepalive
+				is provided for that leg.
+			</para>
+			<para>
+				<emphasis>Default value is <quote>inactive</quote>.</emphasis>
+			</para>
+			<example>
+				<title>Set <varname>hold_media_direction</varname> parameter</title>
+				<programlisting format="linespecific">
+...
+modparam("media_exchange", "hold_media_direction", "recvonly")
+...
+	</programlisting>
+			</example>
+		</section>
+	</section>
+
 	<section id="exported_functions" xreflabel="exported_functions">
 		<title>Exported Functions</title>
 		<section id="func_media_fork_to_uri" xreflabel="media_fork_to_uri()">

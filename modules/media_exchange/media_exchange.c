@@ -32,6 +32,15 @@ struct rtp_relay_binds media_rtp;
 static str b2b_media_exchange_cap = str_init("media_exchange");
 str media_default_instance = str_init(MEDIA_DEFAULT_INSTANCE);
 
+/* SDP direction written into the answer/re-INVITE sent to the party that a
+ * media exchange puts on hold (e.g. the holder during Music-on-Hold). The
+ * default "inactive" preserves the upstream behaviour; setting "recvonly"
+ * keeps the held-on UE's RTCP supervision consistent so it does not tear the
+ * call down on RTCP timeout (RFC 3264 §6.1 / RFC 3550 §6.1, IR.92 / TS 26.114).
+ * Must be one of the 8-char SDP direction tokens, because the hold-SDP builder
+ * relies on every direction attribute having the same length as "inactive". */
+static char *media_hold_direction_param = NULL;
+
 static int mod_preinit(void);
 static int mod_init(void);
 static int media_fork_to_uri(struct sip_msg *msg, str *uri,
@@ -133,6 +142,7 @@ static const cmd_export_t cmds[] = {
 
 /* exported parameters */
 static const param_export_t params[] = {
+	{"hold_media_direction", STR_PARAM, &media_hold_direction_param},
 	{0, 0, 0}
 };
 
@@ -244,6 +254,27 @@ static int mod_init(void)
 			B2BCB_TRIGGER_EVENT, &b2b_media_exchange_cap) < 0) {
 		LM_ERR("could not register loaded callback!\n");
 		return -1;
+	}
+
+	/* validate the configurable hold direction: it must be exactly one of the
+	 * 8-char SDP direction tokens, otherwise the length-safe hold-SDP builder
+	 * would corrupt the body. Fall back to the safe "inactive" default. */
+	if (media_hold_direction_param) {
+		if (strlen(media_hold_direction_param) == media_hold_sdp_direction.len &&
+				(strcasecmp(media_hold_direction_param, "inactive") == 0 ||
+				 strcasecmp(media_hold_direction_param, "recvonly") == 0 ||
+				 strcasecmp(media_hold_direction_param, "sendonly") == 0 ||
+				 strcasecmp(media_hold_direction_param, "sendrecv") == 0)) {
+			media_hold_sdp_direction.s = media_hold_direction_param;
+			media_hold_sdp_direction.len = strlen(media_hold_direction_param);
+			LM_INFO("hold media direction set to '%.*s'\n",
+					media_hold_sdp_direction.len, media_hold_sdp_direction.s);
+		} else {
+			LM_WARN("invalid hold_media_direction '%s' (expected one of "
+					"inactive/recvonly/sendonly/sendrecv); keeping '%.*s'\n",
+					media_hold_direction_param,
+					media_hold_sdp_direction.len, media_hold_sdp_direction.s);
+		}
 	}
 
 	return 0;
