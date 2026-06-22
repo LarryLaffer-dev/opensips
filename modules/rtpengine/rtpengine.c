@@ -4993,7 +4993,18 @@ static int rtpengine_api_offer(struct rtp_relay_session *sess,
 	struct rtpe_set* rset;
 	str *newflags, *node;
 	pv_value_t val;
+	struct sip_msg *msg;
 	int ret;
+
+	/* During a late-negotiation B2B bridge (e.g. a Replaces transfer where the
+	 * outgoing INVITE carries no SDP), rtp_relay performs the offer on the B2B
+	 * reply path, where no reply sip_msg is available (sess->msg is NULL).
+	 * media_pvar is a process-global script var, so any valid sip_msg works as
+	 * its carrier; fall back to a dummy msg exactly like rtpengine_api_delete().
+	 * Without this, pv_set_value/pv_get_spec_value reject the NULL msg, the
+	 * selected node is never recorded, the offer fails and the call is torn
+	 * down right after the transfer connects. */
+	msg = (sess->msg ? sess->msg : get_dummy_sip_msg());
 
 	RTPE_START_READ();
 	if (!server->node.s) {
@@ -5015,11 +5026,11 @@ static int rtpengine_api_offer(struct rtp_relay_session *sess,
 			global_flags, flags, extra_flags);
 	if (!newflags)
 		return -1;
-	ret = rtpengine_offer_answer_body(sess->msg, newflags, node,
+	ret = rtpengine_offer_answer_body(msg, newflags, node,
 			&media_pvar, sess->body, body, rset, OP_OFFER);
 	pkg_free(newflags->s);
 	if (ret >= 0) {
-		if (pv_get_spec_value(sess->msg, &media_pvar, &val) >= 0)
+		if (pv_get_spec_value(msg, &media_pvar, &val) >= 0)
 			fill_rtpengine_node(server, &val.rs);
 		else
 			LM_ERR("could not retrieve the value of the used rtpengine!\n");
