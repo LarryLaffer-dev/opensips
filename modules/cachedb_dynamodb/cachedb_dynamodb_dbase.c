@@ -266,7 +266,7 @@ void add_key_to_set(dynamodb_con *con, const str *keyset_name, const str *key) {
 }
 
 
-int dynamodb_map_set(cachedb_con *connection, const str *key, const str *keyset, const cdb_dict_t *pairs) {
+int dynamodb_map_set(cachedb_con *connection, const str *key, const str *keyset, const cdb_dict_t *pairs, int ttl) {
 	dynamodb_con *con;
 	struct list_head *_;
 	cdb_pair_t *pair;
@@ -317,7 +317,7 @@ int dynamodb_map_set(cachedb_con *connection, const str *key, const str *keyset,
 			return -1;
 		}
 
-		ret = insert_item_dynamodb(&con->config, con->tableName, con->key, *key, pair->key.name, attribute_value, 0);
+		ret = insert_item_dynamodb(&con->config, con->tableName, con->key, *key, pair->key.name, attribute_value, ttl > 0 ? ttl : 0);
 		if (ret == -1 && pair->val.type != CDB_NULL) {
 			LM_ERR("Failed to insert item\n");
 			if (attribute_value_int != NULL)

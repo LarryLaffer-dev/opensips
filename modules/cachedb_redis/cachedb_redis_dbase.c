@@ -2022,11 +2022,21 @@ int redis_map_get(cachedb_con *con, const str *key, cdb_res_t *res)
 
 			rc = redis_run_command(con, &get_reply, &s, "HGETALL %b",
 				s.s, (size_t)s.len);
-			if (rc != 0)
-				goto err_free_reply;
-
-			if (get_reply->elements == 0)
+			if (rc != 0) {
+				/* the key may have changed type or been removed between
+				 * the SCAN and the HGETALL (e.g. a foreign/orphaned key of
+				 * the wrong type); skip it rather than aborting the scan */
+				LM_DBG("skipping key %.*s: HGETALL failed (rc=%d)\n",
+					s.len, s.s, rc);
+				get_reply = NULL;
 				continue;
+			}
+
+			if (get_reply->elements == 0) {
+				freeReplyObject(get_reply);
+				get_reply = NULL;
+				continue;
+			}
 
 			cdb_row = pkg_malloc(sizeof *cdb_row);
 			if (!cdb_row) {
@@ -2123,8 +2133,29 @@ err_free_reply:
 	return rc;
 }
 
+/* Apply an expiry (in seconds) to @key. A @ttl <= 0 is a no-op, leaving the
+ * key persistent. Failure to set the expiry is logged but not fatal, since the
+ * value itself was already stored successfully. */
+static void redis_apply_expire(cachedb_con *con, const str *key, int ttl)
+{
+	redisReply *reply = NULL;
+
+	if (ttl <= 0)
+		return;
+
+	if (redis_run_command(con, &reply, (str *)key, "EXPIRE %b %d",
+			key->s, (size_t)key->len, ttl) != 0) {
+		LM_ERR("failed to set expiry of %d s on key %.*s\n",
+			ttl, key->len, key->s);
+		return;
+	}
+
+	LM_DBG("set %.*s to expire in %d s\n", key->len, key->s, ttl);
+	freeReplyObject(reply);
+}
+
 int redis_map_set(cachedb_con *con, const str *key, const str *subkey,
-	const cdb_dict_t *pairs)
+	const cdb_dict_t *pairs, int ttl)
 {
 	int argc = 0;
 	const char *argv[MAP_SET_MAX_FIELDS+2];
@@ -2211,6 +2242,10 @@ int redis_map_set(cachedb_con *con, const str *key, const str *subkey,
 	freeReplyObject(reply);
 	reply = NULL;
 
+	/* refresh the expiry on the hash so that actively-updated entries
+	 * survive while orphaned/leaked ones are eventually reclaimed */
+	redis_apply_expire(con, key, ttl);
+
 	if (subkey) {
 		rc = redis_run_command(con, &reply, (str*)subkey, "SADD %b %b",
 			subkey->s, (size_t)subkey->len, key->s, (size_t)key->len);
@@ -2218,6 +2253,9 @@ int redis_map_set(cachedb_con *con, const str *key, const str *subkey,
 			return rc;
 
 		freeReplyObject(reply);
+
+		/* the index set must not outlive the data it points to */
+		redis_apply_expire(con, subkey, ttl);
 	}
 
 	return 0;

@@ -141,6 +141,7 @@ extern str init_callid_hdr;
 extern str db_url;
 extern str cdb_url;
 extern str cdb_key_prefix;
+extern int cdb_expire;
 extern db_con_t *b2bl_db ;
 extern db_func_t b2bl_dbf;
 extern cachedb_funcs b2bl_cdbf;

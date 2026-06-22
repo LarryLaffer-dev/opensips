@@ -225,7 +225,7 @@ static int b2be_cdb_insert(int type, b2b_dlg_t* dlg, int cols_no)
 		cdb_subkey = NULL;
 	}
 
-	if ((rc = b2be_cdbf.map_set(b2be_cdb, cdb_key, cdb_subkey, &cdb_pairs)))
+	if ((rc = b2be_cdbf.map_set(b2be_cdb, cdb_key, cdb_subkey, &cdb_pairs, cdb_expire)))
 		LM_ERR("cachedb set failed\n");
 
 	if (cdb_subkey)
@@ -352,7 +352,7 @@ static int b2be_cdb_update(int type, b2b_dlg_t* dlg, int cols_no)
 
 	cdb_add_n_pairs(&cdb_pairs, n_start_update, cols_no - 1);
 
-	if ((rc = b2be_cdbf.map_set(b2be_cdb, cdb_key, NULL, &cdb_pairs)))
+	if ((rc = b2be_cdbf.map_set(b2be_cdb, cdb_key, NULL, &cdb_pairs, cdb_expire)))
 		LM_ERR("cachedb set failed\n");
 
 	pkg_free(cdb_key->s);
@@ -909,9 +909,18 @@ int b2b_entities_restore_cdb(void)
 
 		memset(vals, 0, sizeof vals);
 
-		get_val_from_dict(0, 0, &pair->val.val.dict, vals);
-		get_val_from_dict(2, 1, &pair->val.val.dict, vals);
-		get_val_from_dict(3, 1, &pair->val.val.dict, vals);
+		/* A key may carry our prefix yet not be a valid entity record:
+		 * e.g. an orphaned/foreign key (possibly of a different Redis type)
+		 * left behind by an abnormal teardown. Skip such keys instead of
+		 * aborting the whole restore, which would otherwise fail mod_init
+		 * and send the process into a crash-loop. */
+		if (get_val_from_dict(0, 0, &pair->val.val.dict, vals) < 0 ||
+			get_val_from_dict(2, 1, &pair->val.val.dict, vals) < 0 ||
+			get_val_from_dict(3, 1, &pair->val.val.dict, vals) < 0) {
+			LM_WARN("skipping malformed/foreign b2b entity key [%.*s]\n",
+				pair->key.name.len, pair->key.name.s);
+			continue;
+		}
 
 		get_val_from_dict(15, 0, &pair->val.val.dict, vals);
 		get_val_from_dict(4, 1, &pair->val.val.dict, vals);
@@ -942,8 +951,9 @@ int b2b_entities_restore_cdb(void)
 		get_val_from_dict(26, 1, &pair->val.val.dict, vals);
 
 		if (load_entity(vals) < 0) {
-			cdb_free_rows(&res);
-			return -1;
+			LM_WARN("skipping b2b entity key [%.*s] that could not be "
+				"restored\n", pair->key.name.len, pair->key.name.s);
+			continue;
 		}
 	}
 

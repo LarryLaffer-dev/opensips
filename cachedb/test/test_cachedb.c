@@ -469,7 +469,7 @@ static int test_map_set(cachedb_funcs *api, cachedb_con *con,
 	init_str(&pair->val.val.st, pkg_strdup("foo"));
 	cdb_dict_add(pair, out_pairs1);
 
-	if (!ok(api->map_set(con, &key, &subkey, out_pairs1) == 0))
+	if (!ok(api->map_set(con, &key, &subkey, out_pairs1, 0) == 0))
 		return 0;
 
 	cdb_dict_init(out_pairs2);
@@ -493,7 +493,7 @@ static int test_map_set(cachedb_funcs *api, cachedb_con *con,
 	init_str(&pair->val.val.st, pkg_strdup("bar"));
 	cdb_dict_add(pair, out_pairs2);
 
-	if (!ok(api->map_set(con, &key, &subkey, out_pairs2) == 0))
+	if (!ok(api->map_set(con, &key, &subkey, out_pairs2, 0) == 0))
 		return 0;
 
 	return 1;
@@ -566,7 +566,7 @@ static int test_map_ops(cachedb_funcs *api, cachedb_con *con)
 	init_str(&pair->val.val.st, pkg_strdup("baz"));
 	cdb_dict_add(pair, &cols1);
 
-	api->map_set(con, &key1, &subkey, &cols1);
+	api->map_set(con, &key1, &subkey, &cols1, 0);
 
 	cdb_dict_init(&cols2);
 
@@ -579,7 +579,7 @@ static int test_map_ops(cachedb_funcs *api, cachedb_con *con)
 	init_str(&pair->val.val.st, pkg_strdup("biz"));
 	cdb_dict_add(pair, &cols2);
 
-	api->map_set(con, &key2, &subkey, &cols2);
+	api->map_set(con, &key2, &subkey, &cols2, 0);
 
 	if (!ok(api->map_remove(con, &key1, &subkey) == 0))
 		return 0;

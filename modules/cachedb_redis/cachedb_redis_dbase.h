@@ -132,7 +132,7 @@ int redis_get_counter(cachedb_con *connection,str *attr,int *val);
 int redis_raw_query(cachedb_con *connection,str *attr,cdb_raw_entry ***reply,int expected_kv_no,int *reply_no);
 int redis_map_get(cachedb_con *con, const str *key, cdb_res_t *res);
 int redis_map_set(cachedb_con *con, const str *key, const str *subkey,
-	const cdb_dict_t *pairs);
+	const cdb_dict_t *pairs, int ttl);
 int redis_map_remove(cachedb_con *con, const str *key, const str *subkey);
 
 #endif /* CACHEDBREDIS_DBASE_H */

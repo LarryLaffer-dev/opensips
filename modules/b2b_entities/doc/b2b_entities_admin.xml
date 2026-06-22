@@ -205,6 +205,36 @@ modparam("b2b_entities", "cachedb_key_prefix", "b2b")
 		</example>
 	</section>
 
+	<section id="param_cachedb_expire" xreflabel="cachedb_expire">
+		<title><varname>cachedb_expire</varname> (int)</title>
+		<para>
+		Expiry, in seconds, applied to every entity key (and its index set)
+		stored in the NoSQL database. The expiry is refreshed on each write,
+		so actively-updated entities never expire, while entries leaked by an
+		abnormal teardown are eventually reclaimed instead of accumulating as
+		orphaned, no-TTL keys. Such orphaned keys could otherwise cause a
+		restart to fail while restoring state.
+		</para>
+		<para>
+		Set to <quote>0</quote> to disable expiry (keys persist indefinitely,
+		the legacy behaviour). Only has an effect when
+		<varname>cachedb_url</varname> is used.
+		</para>
+		<para>
+		<emphasis>
+			Default value is <quote>14400</quote> (4 hours).
+		</emphasis>
+		</para>
+		<example>
+		<title>Set <varname>cachedb_expire</varname> parameter</title>
+		<programlisting format="linespecific">
+...
+modparam("b2b_entities", "cachedb_expire", 14400)
+...
+</programlisting>
+		</example>
+	</section>
+
 	<section id="param_update_period" xreflabel="update_period">
 		<title><varname>update_period</varname> (int)</title>
 		<para>

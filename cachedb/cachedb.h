@@ -153,8 +153,18 @@ typedef struct cachedb_funcs_t {
 	 */
 
 	int (*map_get) (cachedb_con *con, const str *key, cdb_res_t *res);
+
+	/**
+	 * map_set() - store a dictionary under @key (and optionally index @key
+	 * in the set at @subkey).
+	 * @ttl: expiry, in seconds, to (re)apply to @key and the @subkey set.
+	 *       A value <= 0 means "no expiry" (the keys persist indefinitely).
+	 *       Backends that support per-key expiry should refresh the TTL on
+	 *       every call, so that actively-updated entries never expire while
+	 *       orphaned/leaked entries are eventually reclaimed.
+	 */
 	int (*map_set) (cachedb_con *con, const str *key, const str *subkey,
-		const cdb_dict_t *pairs);
+		const cdb_dict_t *pairs, int ttl);
 	int (*map_remove) (cachedb_con *con, const str *key, const str *subkey);
 
 	/* Checks if the database is replicated (in an OpenSIPS cluster).
