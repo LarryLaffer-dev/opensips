@@ -2015,10 +2015,19 @@ int bridge_msg_term_entity(b2bl_entity_id_t *old_entity,
 {
 	b2b_req_data_t req_data;
 	b2b_rpl_data_t rpl_data;
+	int prev_locked_by = -1;
 
 	LM_DBG("terminating b2bl_entity [%p]->[%.*s] type [%d]\n",
 				old_entity, old_entity->key.len, old_entity->key.s,
 				old_entity->type);
+
+	/* The caller may already hold the tuple lock (locked_by==process_no) and
+	 * continue using it after we return. Remember its ownership so we can
+	 * restore it instead of clearing it, otherwise re-entrant lock acquisition
+	 * in the caller (e.g. rtp_relay reqin callback during server_new) would
+	 * deadlock against the still-held lock. */
+	if (hash_index)
+		prev_locked_by = b2bl_htable[*hash_index].locked_by;
 	if(old_entity->disconnected)
 	{
 		memset(&rpl_data, 0, sizeof(b2b_rpl_data_t));
@@ -2040,7 +2049,7 @@ int bridge_msg_term_entity(b2bl_entity_id_t *old_entity,
 				b2bl_htable[*hash_index].locked_by = process_no;
 			b2b_api.send_request(&req_data);
 			if (hash_index)
-				b2bl_htable[*hash_index].locked_by = -1;
+				b2bl_htable[*hash_index].locked_by = prev_locked_by;
 		}
 		else
 		{
@@ -2060,7 +2069,7 @@ int bridge_msg_term_entity(b2bl_entity_id_t *old_entity,
 	b2b_api.entity_delete(old_entity->type, &old_entity->key,
 		old_entity->dlginfo, 1, 1);
 	if (hash_index)
-		b2bl_htable[*hash_index].locked_by = -1;
+		b2bl_htable[*hash_index].locked_by = prev_locked_by;
 	if(old_entity->dlginfo)
 		shm_free(old_entity->dlginfo);
 	shm_free(old_entity);

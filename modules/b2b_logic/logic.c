@@ -3541,8 +3541,12 @@ int script_trigger_scenario(struct sip_msg* msg, str *id, str * params,
 							remote_tuple->len, remote_tuple->s);
 				tuple->bridge_flags = 0;
 			} else {
-				/* extract the entity and delete the tuple */
-				B2BL_LOCK_GET(remote_tuple_hash_index);
+				/* extract the entity and delete the tuple; skip re-locking when
+				 * the remote tuple shares the bucket we already hold for the new
+				 * tuple, since B2BL_LOCK_GET is not re-entrant and would deadlock
+				 * on itself */
+				if (remote_tuple_hash_index != hash_index)
+					B2BL_LOCK_GET(remote_tuple_hash_index);
 
 				cur_tuple = b2bl_search_tuple_safe(remote_tuple_hash_index, local_index);
 				if(cur_tuple == NULL)
@@ -3564,10 +3568,15 @@ int script_trigger_scenario(struct sip_msg* msg, str *id, str * params,
 						send_bridge_notify(cur_tuple->bridge_entities[remote_tuple_party], remote_tuple_hash_index, NULL);
 					}
 				}
-				B2BL_LOCK_RELEASE(remote_tuple_hash_index);
+				if (remote_tuple_hash_index != hash_index)
+					B2BL_LOCK_RELEASE(remote_tuple_hash_index);
 			}
 		} else {
-			B2BL_LOCK_GET(cur_route_ctx.hash_index);
+			/* skip re-locking when the current route context shares the bucket
+			 * we already hold for the new tuple (B2BL_LOCK_GET is not re-entrant
+			 * and would deadlock on itself) */
+			if (cur_route_ctx.hash_index != hash_index)
+				B2BL_LOCK_GET(cur_route_ctx.hash_index);
 			cur_tuple = b2bl_search_tuple_safe(cur_route_ctx.hash_index,
 				cur_route_ctx.local_index);
 			if(cur_tuple == NULL) {
@@ -3583,7 +3592,8 @@ int script_trigger_scenario(struct sip_msg* msg, str *id, str * params,
 					send_bridge_notify(entity, cur_route_ctx.hash_index, NULL);
 				}
 			}
-			B2BL_LOCK_RELEASE(cur_route_ctx.hash_index);
+			if (cur_route_ctx.hash_index != hash_index)
+				B2BL_LOCK_RELEASE(cur_route_ctx.hash_index);
 		}
 	}
 	LM_DBG("Flags: %u (NOTIFY: %u)\n", tuple->bridge_flags, B2BL_BR_FLAG_NOTIFY);
