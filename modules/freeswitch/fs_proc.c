@@ -241,7 +241,8 @@ inline static int handle_io(struct fd_map *fm, int idx, int event_type)
 	fs_evs *sock = (fs_evs *)fm->data;
 	esl_status_t rc;
 	cJSON *ev = NULL;
-	char *s;
+	char *s, *dispatch_name;
+	char custom_name[256];
 
 	switch (fm->type) {
 		case F_GEN_PROC:
@@ -285,11 +286,26 @@ inline static int handle_io(struct fd_map *fm, int idx, int event_type)
 
 			s = cJSON_GetObjectItem(ev, "Event-Name")->valuestring;
 
+			/* CUSTOM events carry their real name in the Event-Subclass header
+			 * while Event-Name is just "CUSTOM". Subscriptions are registered
+			 * under the full ESL argument ("CUSTOM <subclass>", see
+			 * w_esl_send_recv), so dispatch under that combined name; otherwise
+			 * get_event() keyed on "CUSTOM" never matches and the event (e.g.
+			 * conference::maintenance) is silently dropped. */
+			dispatch_name = s;
+			if (strcmp(s, "CUSTOM") == 0) {
+				cJSON *subc = cJSON_GetObjectItem(ev, "Event-Subclass");
+				if (subc && subc->valuestring &&
+				    snprintf(custom_name, sizeof(custom_name), "CUSTOM %s",
+				             subc->valuestring) < (int)sizeof(custom_name))
+					dispatch_name = custom_name;
+			}
+
 			/* fire event notifications to any subscribers */
-			if (fs_raise_event(sock, s,
+			if (fs_raise_event(sock, dispatch_name,
 			                   sock->handle->last_sr_event->body) != 0)
 				LM_ERR("errors during event %s raise on %.*s:%d\n",
-				       s, sock->host.len, sock->host.s, sock->port);
+				       dispatch_name, sock->host.len, sock->host.s, sock->port);
 
 			if (strcmp(s, FS_STATS_EVENT_NAME) == 0) {
 				if (fs_renew_stats(sock, ev) != 0)

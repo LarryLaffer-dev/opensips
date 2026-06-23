@@ -45,8 +45,9 @@
 #define EVENT_AS_FEATURE     10
 #define EVENT_REFER          11
 #define EVENT_REG            12
+#define EVENT_CONFERENCE     13
 /* keep this one updated, pointing to the last EVENT above */
-#define EVENT_LAST           EVENT_REG
+#define EVENT_LAST           EVENT_CONFERENCE
 
 typedef struct event {
 	str text;       /* Original string representation */

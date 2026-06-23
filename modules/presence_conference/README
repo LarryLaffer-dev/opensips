@@ -1,0 +1,71 @@
+presence_conference Module
+==========================
+
+Overview
+--------
+
+The presence_conference module implements the SIP conference event package
+(RFC 4575): it answers SUBSCRIBE requests for "Event: conference" and sends
+NOTIFY bodies of type application/conference-info+xml describing the live
+participant roster of a conference.
+
+It is designed to run on the IMS MMTel-AS, which acts as the conference focus
+(RFC 4579 section 4.4 / 3GPP TS 24.147). The actual media mixing is performed by
+a FreeSWITCH MRF (MRFP); this module sources the roster from the mixer over the
+FreeSWITCH Event Socket Library (ESL) using the `freeswitch` module's API.
+
+The module registers a presence event ("conference") with a build_notify_body
+callback (used for the initial and refresh NOTIFY) and an aux_body_processing
+callback (used to patch the per-watcher monotonic "version" attribute). Live
+roster updates are pushed to existing watchers via the presence
+notify_all_on_publish() API, driven by the FreeSWITCH conference::maintenance
+event (wired in the OpenSIPS script through the freeswitch_scripting module's
+E_FREESWITCH event_route, which calls conference_notify()).
+
+Dependencies
+------------
+
+  * presence
+  * freeswitch
+  * libxml2 (build dependency)
+
+The presence module must be configured with a db_url (handle_subscribe()
+requires the presentity / active_watchers / watchers tables).
+
+Parameters
+----------
+
+  mrf_esl_url (string)
+      FreeSWITCH ESL URL of the MRF, used to run "conference xml_list".
+      Format: fs://[[user]:password@]host[:port]
+      Example: "fs://:ClueCon@my-mrf:8021"
+      If unset, rosters are served empty.
+
+      The module lists all mixer conferences and matches the one whose name
+      equals the focus URI conference id (comparing the part before any '@'),
+      so it is robust to FreeSWITCH naming the conference "<id>",
+      "<id>@default" or "<id>@<domain>".
+
+  conf_user_prefix (string, default "conf=")
+      User-part prefix that identifies a conference focus URI
+      (sip:conf=<id>@conf-factory...). The conference id is the user part with
+      this prefix stripped.
+
+  default_expires (integer, default 3600)
+      Default subscription expiry for the conference event.
+
+Functions
+---------
+
+  conference_notify(presentity)
+      Rebuild the roster for the given focus presentity URI from the MRF mixer
+      and send a NOTIFY to every active watcher. Intended to be called from
+      event_route[E_FREESWITCH] on conference::maintenance events.
+
+Privacy
+-------
+
+Participants whose caller identity is restricted (CLIR, TS 24.147 / TS 24.607)
+are anonymized in the roster (entity sip:anonymous@anonymous.invalid, no
+display name). Detection is heuristic, based on the caller-id rendered by
+FreeSWITCH.
