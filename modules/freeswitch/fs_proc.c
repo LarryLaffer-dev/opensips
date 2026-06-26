@@ -410,6 +410,7 @@ void fs_run_esl_command(int sender, void *_cmd)
 {
 	fs_ipc_esl_cmd *cmd = (fs_ipc_esl_cmd *)_cmd;
 	struct fs_esl_reply *reply;
+	const char *esl_out;
 
 	if (w_esl_send_recv(cmd->sock->handle, &cmd->fs_cmd, ESL_CMD) < 0) {
 		LM_ERR("failed to run %.*s command on sock %s:%d\n",
@@ -418,7 +419,19 @@ void fs_run_esl_command(int sender, void *_cmd)
 		goto out;
 	}
 
-	LM_DBG("received reply: %s\n", cmd->sock->handle->last_sr_reply);
+	/* An ESL "api" command returns its output in the response event body
+	 * (Content-Type: api/response). handle->last_sr_reply only carries the
+	 * Reply-Text header, which is empty for an api/response and is capped at
+	 * 1024 bytes -- relying on it returned an empty/truncated payload for large
+	 * api results such as the "conference xml_list" roster consumed by
+	 * presence_conference. Prefer the event body; fall back to last_sr_reply for
+	 * command/reply responses that carry no body. */
+	esl_out = (cmd->sock->handle->last_sr_event &&
+	           cmd->sock->handle->last_sr_event->body) ?
+		cmd->sock->handle->last_sr_event->body :
+		cmd->sock->handle->last_sr_reply;
+
+	LM_DBG("received reply: %s\n", esl_out);
 
 	reply = shm_malloc(sizeof *reply);
 	if (!reply) {
@@ -428,7 +441,7 @@ void fs_run_esl_command(int sender, void *_cmd)
 	}
 	memset(reply, 0, sizeof *reply);
 
-	reply->text.s = shm_strdup(cmd->sock->handle->last_sr_reply);
+	reply->text.s = shm_strdup(esl_out);
 	if (!reply->text.s) {
 		shm_free(reply);
 		LM_ERR("oom\n");

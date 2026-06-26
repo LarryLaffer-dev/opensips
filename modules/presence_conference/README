@@ -14,23 +14,39 @@ It is designed to run on the IMS MMTel-AS, which acts as the conference focus
 a FreeSWITCH MRF (MRFP); this module sources the roster from the mixer over the
 FreeSWITCH Event Socket Library (ESL) using the `freeswitch` module's API.
 
-The module registers a presence event ("conference") with a build_notify_body
-callback (used for the initial and refresh NOTIFY) and an aux_body_processing
-callback (used to patch the per-watcher monotonic "version" attribute). Live
-roster updates are pushed to existing watchers via the presence
-notify_all_on_publish() API, driven by the FreeSWITCH conference::maintenance
-event (wired in the OpenSIPS script through the freeswitch_scripting module's
-E_FREESWITCH event_route, which calls conference_notify()).
+In-dialog subscriptions
+-----------------------
+
+VoLTE UEs subscribe to the conference state *in-dialog*, reusing the focus
+INVITE dialog (RFC 4575 section 3 / RFC 5057 multiple dialog usages): the
+SUBSCRIBE carries the To-tag the MRF minted when it answered the conference
+INVITE, and loose-routes back through the MMTel-AS record-route. The OpenSIPS
+presence engine only serves subscriptions on dialogs it created itself, so it
+cannot adopt such a foreign-owned dialog (it answers 481). This module therefore
+implements the notifier directly on top of the dialog the MMTel-AS already
+tracks for the conference (created by the cfg conf_create route):
+
+  * conference_subscribe() accepts the in-dialog SUBSCRIBE (200 OK) and emits
+    the initial / refresh conference-info+xml NOTIFY on the focus dialog. The
+    dialog module's send_indialog_request() supplies the route set, target and
+    CSeq from the stored dialog; the per-NOTIFY monotonic "version" attribute is
+    patched in.
+  * conference_notify() rebuilds the roster and fans a fresh NOTIFY out to every
+    watcher of the conference when the mixer membership changes. It is driven by
+    the FreeSWITCH conference::maintenance event (wired in the OpenSIPS script
+    through the freeswitch_scripting module's E_FREESWITCH event_route).
+
+Watcher state is kept in a small in-memory (shared) registry keyed by conference
+id; each entry references the tracked focus dialog and is removed when that
+dialog is destroyed (BYE / timeout). No database is used.
 
 Dependencies
 ------------
 
-  * presence
-  * freeswitch
+  * dialog (in-dialog NOTIFY delivery, dialog tracking)
+  * tm (SUBSCRIBE 200 OK)
+  * freeswitch (ESL roster)
   * libxml2 (build dependency)
-
-The presence module must be configured with a db_url (handle_subscribe()
-requires the presentity / active_watchers / watchers tables).
 
 Parameters
 ----------
@@ -56,6 +72,14 @@ Parameters
 
 Functions
 ---------
+
+  conference_subscribe(presentity)
+      Accept an in-dialog conference event-package SUBSCRIBE on the focus dialog
+      and emit the initial / refresh roster NOTIFY. `presentity` is the
+      conference focus URI (the SUBSCRIBE Request-URI, $ru). The cfg must run
+      loose_route() and t_newtran() before calling it (t_newtran absorbs UDP
+      retransmissions). On Expires: 0 it sends a terminating NOTIFY and drops
+      the watcher. Usable only from the request route.
 
   conference_notify(presentity)
       Rebuild the roster for the given focus presentity URI from the MRF mixer

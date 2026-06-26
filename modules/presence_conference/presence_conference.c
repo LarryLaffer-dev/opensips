@@ -5,8 +5,20 @@
  * application/conference-info+xml) from the MMTel-AS conference focus
  * (RFC 4579 §4.4 / TS 24.147). The participant roster is sourced live from the
  * FreeSWITCH MRF mixer over the Event Socket Library (ESL), via the freeswitch
- * module's fs_api: the roster is built on demand for each NOTIFY and pushed to
- * existing watchers when the mixer membership changes.
+ * module's fs_api.
+ *
+ * VoLTE UEs subscribe to the conference state *in-dialog*, reusing the focus
+ * INVITE dialog (RFC 4575 §3 / RFC 5057 multiple dialog usages): the SUBSCRIBE
+ * carries the To-tag minted by the MRF when it answered the conference INVITE.
+ * The OpenSIPS presence engine only serves subscriptions on dialogs it created
+ * itself, so it cannot adopt such a foreign-owned dialog (it answers 481). This
+ * module therefore implements the notifier directly on top of the dialog the
+ * MMTel-AS already tracks for the conference (created in the cfg conf_create
+ * route): conference_subscribe() accepts the in-dialog SUBSCRIBE and emits the
+ * conference-info+xml NOTIFY using the dialog module's send_indialog_request
+ * (which supplies the route set, target and CSeq from the stored dialog), and
+ * conference_notify() pushes a fresh roster to every watcher when the mixer
+ * membership changes (CUSTOM conference::maintenance).
  *
  * Copyright (C) 2026 ng-voice GmbH
  *
@@ -29,6 +41,7 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <time.h>
 #include <libxml/parser.h>
 #include <libxml/tree.h>
 
@@ -38,26 +51,28 @@
 #include "../../mem/shm_mem.h"
 #include "../../str.h"
 #include "../../ut.h"
-#include "../../parser/parse_event.h"
+#include "../../locking.h"
+#include "../../hash_func.h"
+#include "../../data_lump_rpl.h"
+#include "../../parser/msg_parser.h"
+#include "../../parser/parse_expires.h"
 
-#include "../presence/bind_presence.h"
+#include "../dialog/dlg_load.h"
+#include "../tm/tm_load.h"
 #include "../freeswitch/fs_api.h"
 
 #include "presence_conference.h"
 
 static int mod_init(void);
+static void mod_destroy(void);
 
-static str *conf_build_notify_body(str *pres_uri, str *subs_body,
-		str *ct_type, int *suppress_notify);
-static str *conf_body_setversion(subs_t *subs, str *body);
-static void pkg_free_w(char *s);
-
+static int conf_subscribe_f(struct sip_msg *msg, str *presentity);
 static int conf_notify_f(struct sip_msg *msg, str *presentity);
 
-/* presence + FreeSWITCH bindings */
-presence_api_t pres_api;
-struct fs_binds fs_api;
-pres_ev_t *conf_event;
+/* module bindings */
+struct dlg_binds dlg_api;
+struct tm_binds  tmb;
+struct fs_binds  fs_api;
 
 /* modparams */
 static char *mrf_esl_url_param;
@@ -68,6 +83,9 @@ static str mrf_esl_url      = {NULL, 0};
 static str conf_user_prefix = {NULL, 0};
 
 static const cmd_export_t cmds[] = {
+	{"conference_subscribe", (cmd_function)conf_subscribe_f, {
+		{CMD_PARAM_STR, 0, 0}, {0, 0, 0}},
+		REQUEST_ROUTE},
 	{"conference_notify", (cmd_function)conf_notify_f, {
 		{CMD_PARAM_STR, 0, 0}, {0, 0, 0}},
 		ALL_ROUTES},
@@ -83,7 +101,8 @@ static const param_export_t params[] = {
 
 static const dep_export_t deps = {
 	{ /* OpenSIPS module dependencies */
-		{ MOD_TYPE_DEFAULT, "presence",   DEP_ABORT },
+		{ MOD_TYPE_DEFAULT, "dialog",     DEP_ABORT },
+		{ MOD_TYPE_DEFAULT, "tm",         DEP_ABORT },
 		{ MOD_TYPE_DEFAULT, "freeswitch", DEP_ABORT },
 		{ MOD_TYPE_NULL, NULL, 0 },
 	},
@@ -110,16 +129,10 @@ struct module_exports exports = {
 	0,                      /* module pre-initialization function */
 	mod_init,               /* module initialization function */
 	0,                      /* response function */
-	0,                      /* destroy function */
+	mod_destroy,            /* destroy function */
 	0,                      /* per-child init function */
 	0                       /* reload confirm function */
 };
-
-static void pkg_free_w(char *s)
-{
-	if (s)
-		pkg_free(s);
-}
 
 /* ---- small growable pkg string builder ----------------------------------- */
 
@@ -262,7 +275,6 @@ static int conf_esl_list(str *reply)
 {
 	fs_evs *sock;
 	str cmd = str_init("api conference xml_list");
-	int rc = -1;
 
 	reply->s = NULL;
 	reply->len = 0;
@@ -295,8 +307,7 @@ static int conf_esl_list(str *reply)
 	}
 
 	fs_api.put_evs(sock);
-	rc = 0;
-	return rc;
+	return 0;
 }
 
 /* True when a participant requested CLIR / privacy and must be anonymized in
@@ -342,6 +353,38 @@ static char *xml_child_text(xmlNode *parent, const char *name)
 	return NULL;
 }
 
+static int conf_hex_val(char c)
+{
+	if (c >= '0' && c <= '9') return c - '0';
+	if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+	if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+	return -1;
+}
+
+/* In-place percent-decode (RFC 3986). FreeSWITCH "conference xml_list"
+ * URL-encodes caller_id_name / caller_id_number (e.g. "+4915888456043" ->
+ * "%2B4915888456043"), so decode before using them to build SIP URIs and
+ * display names; otherwise the roster carries malformed entities such as
+ * sip:%2B...@host. */
+static void conf_url_decode(char *s)
+{
+	char *r, *w;
+	int hi, lo;
+
+	if (!s)
+		return;
+	for (r = w = s; *r; ) {
+		if (*r == '%' && (hi = conf_hex_val(r[1])) >= 0 &&
+				(lo = conf_hex_val(r[2])) >= 0) {
+			*w++ = (char)((hi << 4) | lo);
+			r += 3;
+		} else {
+			*w++ = *r++;
+		}
+	}
+	*w = '\0';
+}
+
 /* Emit one RFC 4575 <user> block for a FreeSWITCH <member> node. */
 static int conf_emit_member(cbuf_t *b, xmlNode *member, str *host, int *count)
 {
@@ -349,6 +392,10 @@ static int conf_emit_member(cbuf_t *b, xmlNode *member, str *host, int *count)
 	char *number = xml_child_text(member, "caller_id_number");
 	cbuf_t ent = {0, 0, 0};
 	int anon, rc = -1;
+
+	/* FreeSWITCH URL-encodes these values in xml_list output */
+	conf_url_decode(name);
+	conf_url_decode(number);
 
 	/* skip non-participant pseudo members (e.g. recorder) */
 	if (!number && !name)
@@ -460,7 +507,9 @@ static int conf_walk(cbuf_t *b, xmlNode *node, str *id, str *host, int *count)
 
 /* Build the full RFC 4575 conference-info+xml roster for a focus URI by
  * querying the FreeSWITCH mixer. Always returns a valid document (an empty
- * roster if the conference/mixer is unavailable) or NULL on hard OOM. */
+ * roster if the conference/mixer is unavailable) or NULL on hard OOM. The
+ * version attribute is left as an 11-char placeholder, patched per NOTIFY by
+ * conf_patch_version(). */
 static str *conf_build_body(str *pres_uri)
 {
 	str reply = {NULL, 0};
@@ -503,7 +552,7 @@ static str *conf_build_body(str *pres_uri)
 		cbuf_appends(&hdr, "<conference-info xmlns=\"" CONF_INFO_NS "\" entity=\"") < 0 ||
 		cbuf_append_esc(&hdr, entity.s, entity.len) < 0 ||
 		/* version placeholder MUST be followed by another attribute so the
-		 * per-watcher patch (aux_body_processing) never overruns into '>' */
+		 * per-NOTIFY patch (conf_patch_version) never overruns into '>' */
 		cbuf_appends(&hdr, "\" version=\"" CONF_VERSION_PLACEHOLDER "\" state=\"full\">\r\n") < 0 ||
 		cbuf_appends(&hdr, " <conference-description/>\r\n") < 0 ||
 		cbuf_appends(&hdr, " <conference-state>\r\n") < 0 ||
@@ -546,129 +595,463 @@ error:
 	return body;
 }
 
-/* presence build_notify_body callback: build the initial / refresh NOTIFY
- * roster on demand for the subscribing watcher. */
-static str *conf_build_notify_body(str *pres_uri, str *subs_body,
-		str *ct_type, int *suppress_notify)
-{
-	str *body;
-
-	body = conf_build_body(pres_uri);
-	if (!body)
-		return NULL;
-
-	if (pkg_str_dup(ct_type, _str(CONF_CONTENT_TYPE)) < 0) {
-		LM_ERR("oom duplicating content-type\n");
-		pkg_free(body->s);
-		pkg_free(body);
-		return NULL;
-	}
-
-	return body;
-}
-
-/* presence aux_body_processing callback: patch the monotonic per-watcher
- * "version" attribute in place (mirrors presence_reginfo). */
-static str *conf_body_setversion(subs_t *subs, str *body)
+/* Patch the monotonic "version" attribute placeholder in place (mirrors
+ * presence_reginfo). The body buffer is NUL-terminated at body->len. */
+static void conf_patch_version(str *body, int version)
 {
 	char *decl_end, *vstart;
-	char version[MAX_INT_LEN + 2]; /* digits + closing quote + NUL */
-	int version_len;
+	char vbuf[MAX_INT_LEN + 2]; /* digits + closing quote + NUL */
+	int vlen;
 
 	if (!body || !body->s || body->len < 40)
-		return NULL;
+		return;
 
-	/* the buffer is NUL-terminated; skip the <?xml ...?> declaration so we do
-	 * not match its own version="1.0" */
+	/* skip the <?xml ...?> declaration so we do not match version="1.0" */
 	decl_end = strchr(body->s, '>');
 	vstart = strstr(decl_end ? decl_end + 1 : body->s, "version=");
 	if (!vstart) {
 		LM_ERR("version attribute not found in conference-info body\n");
-		return NULL;
+		return;
 	}
 	vstart += 9; /* skip 'version="' */
 
-	version_len = snprintf(version, MAX_INT_LEN + 2, "%d\"", subs->version);
-	if (version_len < 0 || version_len >= MAX_INT_LEN + 2) {
-		LM_ERR("failed to render version %d\n", subs->version);
-		return NULL;
+	vlen = snprintf(vbuf, sizeof vbuf, "%d\"", version);
+	if (vlen < 0 || vlen >= (int)sizeof vbuf) {
+		LM_ERR("failed to render version %d\n", version);
+		return;
 	}
 	/* overwrite the placeholder value; pad the remainder with spaces, which
 	 * fall between the closing quote and the following state="full" attribute */
-	memcpy(vstart, version, version_len);
-	memset(vstart + version_len, ' ', (MAX_INT_LEN + 2) - version_len);
-
-	return NULL; /* body modified in place */
+	memcpy(vstart, vbuf, vlen);
+	memset(vstart + vlen, ' ', (MAX_INT_LEN + 2) - vlen);
 }
 
-/* script function conference_notify(presentity): rebuild the roster from the
- * mixer and push a NOTIFY to every active watcher of the focus URI. Called
- * from the FreeSWITCH conference::maintenance event hook. */
-static int conf_notify_f(struct sip_msg *msg, str *presentity)
+/* ---- subscription registry ----------------------------------------------- */
+/* Watchers are keyed by conference id and reference the focus dialog the
+ * MMTel-AS tracks for the conference. The registry lets a mixer-membership
+ * change (conference::maintenance) fan a fresh roster NOTIFY out to every
+ * watcher of that conference. State lives in shared memory because subscribe
+ * (SIP worker), notify (FreeSWITCH event route) and cleanup (dialog destroy)
+ * run in different processes. */
+
+#define CONF_SUB_HASH 64
+
+typedef struct conf_sub {
+	str conf_id;
+	str callid;
+	unsigned int h_entry;
+	unsigned int h_id;
+	int version;
+	time_t expires;          /* absolute expiry */
+	struct conf_sub *next;
+} conf_sub_t;
+
+struct conf_target {
+	unsigned int h_entry;
+	unsigned int h_id;
+	int version;
+	int expires_left;
+};
+
+struct conf_cb_key {
+	str conf_id;
+	str callid;
+};
+
+static conf_sub_t **conf_tbl;
+static gen_lock_t  *conf_lock;
+
+static unsigned int conf_bucket(str *id)
 {
+	return core_hash(id, NULL, CONF_SUB_HASH);
+}
+
+static int conf_shm_str(str *dst, str *src)
+{
+	dst->s = shm_malloc(src->len);
+	if (!dst->s)
+		return -1;
+	memcpy(dst->s, src->s, src->len);
+	dst->len = src->len;
+	return 0;
+}
+
+static int conf_sub_match(conf_sub_t *e, str *conf_id, str *callid)
+{
+	return e->conf_id.len == conf_id->len &&
+		memcmp(e->conf_id.s, conf_id->s, conf_id->len) == 0 &&
+		e->callid.len == callid->len &&
+		memcmp(e->callid.s, callid->s, callid->len) == 0;
+}
+
+/* Insert or refresh a watcher. Returns 1 if newly created, 0 if refreshed,
+ * -1 on error. *out_version receives the (incremented) version to send. */
+static int conf_sub_upsert(str *conf_id, str *callid, unsigned int h_entry,
+		unsigned int h_id, int expires, int *out_version)
+{
+	unsigned int b = conf_bucket(conf_id);
+	conf_sub_t *e;
+	int created = 0;
+
+	lock_get(conf_lock);
+	for (e = conf_tbl[b]; e; e = e->next)
+		if (conf_sub_match(e, conf_id, callid))
+			break;
+
+	if (!e) {
+		e = shm_malloc(sizeof *e);
+		if (!e) {
+			lock_release(conf_lock);
+			LM_ERR("oom for conference subscription\n");
+			return -1;
+		}
+		memset(e, 0, sizeof *e);
+		if (conf_shm_str(&e->conf_id, conf_id) < 0 ||
+			conf_shm_str(&e->callid, callid) < 0) {
+			if (e->conf_id.s)
+				shm_free(e->conf_id.s);
+			shm_free(e);
+			lock_release(conf_lock);
+			LM_ERR("oom for conference subscription keys\n");
+			return -1;
+		}
+		e->h_entry = h_entry;
+		e->h_id = h_id;
+		e->version = 0;
+		e->next = conf_tbl[b];
+		conf_tbl[b] = e;
+		created = 1;
+	} else {
+		/* a re-SUBSCRIBE may ride a fresh dialog instance after replication */
+		e->h_entry = h_entry;
+		e->h_id = h_id;
+	}
+
+	e->expires = time(NULL) + (expires > 0 ? expires : 0);
+	e->version++;
+	*out_version = e->version;
+	lock_release(conf_lock);
+	return created;
+}
+
+static void conf_sub_remove(str *conf_id, str *callid)
+{
+	unsigned int b = conf_bucket(conf_id);
+	conf_sub_t *e, *prev = NULL;
+
+	lock_get(conf_lock);
+	for (e = conf_tbl[b]; e; prev = e, e = e->next) {
+		if (conf_sub_match(e, conf_id, callid)) {
+			if (prev)
+				prev->next = e->next;
+			else
+				conf_tbl[b] = e->next;
+			lock_release(conf_lock);
+			shm_free(e->conf_id.s);
+			shm_free(e->callid.s);
+			shm_free(e);
+			return;
+		}
+	}
+	lock_release(conf_lock);
+}
+
+/* Snapshot all watchers of a conference into a pkg array, bumping each
+ * watcher's version. Returns the count (0 if none, -1 on error). */
+static int conf_sub_collect(str *conf_id, struct conf_target **out)
+{
+	unsigned int b = conf_bucket(conf_id);
+	conf_sub_t *e;
+	struct conf_target *arr;
+	time_t now = time(NULL);
+	int n = 0, i = 0;
+
+	*out = NULL;
+
+	lock_get(conf_lock);
+	for (e = conf_tbl[b]; e; e = e->next)
+		if (e->conf_id.len == conf_id->len &&
+			memcmp(e->conf_id.s, conf_id->s, conf_id->len) == 0)
+			n++;
+	if (n == 0) {
+		lock_release(conf_lock);
+		return 0;
+	}
+	arr = pkg_malloc(n * sizeof *arr);
+	if (!arr) {
+		lock_release(conf_lock);
+		LM_ERR("oom collecting conference watchers\n");
+		return -1;
+	}
+	for (e = conf_tbl[b]; e && i < n; e = e->next) {
+		if (e->conf_id.len == conf_id->len &&
+			memcmp(e->conf_id.s, conf_id->s, conf_id->len) == 0) {
+			e->version++;
+			arr[i].h_entry = e->h_entry;
+			arr[i].h_id = e->h_id;
+			arr[i].version = e->version;
+			arr[i].expires_left = (int)(e->expires - now);
+			i++;
+		}
+	}
+	lock_release(conf_lock);
+	*out = arr;
+	return i;
+}
+
+static void conf_cb_key_free(void *param)
+{
+	struct conf_cb_key *k = (struct conf_cb_key *)param;
+
+	if (!k)
+		return;
+	if (k->conf_id.s)
+		shm_free(k->conf_id.s);
+	if (k->callid.s)
+		shm_free(k->callid.s);
+	shm_free(k);
+}
+
+/* Drop the watcher when its focus dialog is destroyed (BYE / timeout). */
+static void conf_dlg_destroyed(struct dlg_cell *dlg, int type,
+		struct dlg_cb_params *params)
+{
+	struct conf_cb_key *k;
+
+	if (!params || !params->param)
+		return;
+	k = (struct conf_cb_key *)*params->param;
+	if (!k)
+		return;
+	conf_sub_remove(&k->conf_id, &k->callid);
+}
+
+static int conf_register_destroy_cb(struct dlg_cell *dlg, str *conf_id, str *callid)
+{
+	struct conf_cb_key *k = shm_malloc(sizeof *k);
+
+	if (!k) {
+		LM_ERR("oom for dialog cb key\n");
+		return -1;
+	}
+	memset(k, 0, sizeof *k);
+	if (conf_shm_str(&k->conf_id, conf_id) < 0 ||
+		conf_shm_str(&k->callid, callid) < 0) {
+		conf_cb_key_free(k);
+		return -1;
+	}
+	if (dlg_api.register_dlgcb(dlg, DLGCB_DESTROY, conf_dlg_destroyed, k,
+			conf_cb_key_free) < 0) {
+		LM_ERR("failed to register dialog destroy callback\n");
+		conf_cb_key_free(k);
+		return -1;
+	}
+	return 0;
+}
+
+/* ---- NOTIFY emission ----------------------------------------------------- */
+
+/* Send one in-dialog conference-info NOTIFY toward the watcher (caller leg).
+ * The dialog module supplies From/To/Call-ID/Contact/Route/CSeq from the
+ * tracked focus dialog; we only add the event headers and the body. */
+static int conf_send_notify(struct dlg_cell *dlg, str *body, int version,
+		int expires, int terminated)
+{
+	static str met = str_init("NOTIFY");
+	static str ct  = str_init(CONF_CONTENT_TYPE);
+	char hbuf[160];
+	str hdrs;
+
+	conf_patch_version(body, version);
+
+	if (terminated)
+		hdrs.len = snprintf(hbuf, sizeof hbuf,
+			"Event: " CONF_EVENT_NAME "\r\n"
+			"Subscription-State: terminated;reason=timeout\r\n");
+	else
+		hdrs.len = snprintf(hbuf, sizeof hbuf,
+			"Event: " CONF_EVENT_NAME "\r\n"
+			"Subscription-State: active;expires=%d\r\n",
+			expires > 0 ? expires : 0);
+	if (hdrs.len < 0 || hdrs.len >= (int)sizeof hbuf) {
+		LM_ERR("conference NOTIFY headers truncated\n");
+		return -1;
+	}
+	hdrs.s = hbuf;
+
+	if (dlg_api.send_indialog_request(dlg, &met, DLG_CALLER_LEG, body, &ct,
+			&hdrs, NULL, NULL, NULL) < 0) {
+		LM_ERR("failed to send conference NOTIFY\n");
+		return -1;
+	}
+	LM_DBG("sent conference NOTIFY (version=%d, expires=%d, terminated=%d)\n",
+		version, expires, terminated);
+	return 0;
+}
+
+/* ---- exported script functions ------------------------------------------- */
+
+/* conference_subscribe(presentity): accept an in-dialog conference event-package
+ * SUBSCRIBE on the focus dialog and emit the initial / refresh roster NOTIFY.
+ * The cfg must have already run loose_route() and t_newtran() (the latter
+ * absorbs retransmissions). presentity is the conference focus URI ($ru). */
+static int conf_subscribe_f(struct sip_msg *msg, str *presentity)
+{
+	struct dlg_cell *dlg;
+	str conf_id, callid;
+	str reason_ok = str_init("OK");
+	str reason_481 = str_init("Subscription Does Not Exist");
+	int expires, version = 0, created;
+	int need_unref = 0;
 	str *body;
+	char *hdr_append = NULL;
+	int hlen;
 
 	if (!presentity || presentity->len == 0) {
 		LM_ERR("empty presentity\n");
 		return -1;
 	}
 
+	if (parse_headers(msg, HDR_CALLID_F | HDR_EXPIRES_F, 0) < 0 || !msg->callid) {
+		LM_ERR("failed to parse Call-ID/Expires\n");
+		return -1;
+	}
+	callid = msg->callid->body;
+
+	expires = conf_default_expires;
+	if (msg->expires && parse_expires(msg->expires) >= 0 && msg->expires->parsed)
+		expires = ((exp_body_t *)msg->expires->parsed)->val;
+
+	/* the focus dialog was created by conf_create on the conference INVITE;
+	 * the in-dialog SUBSCRIBE matched it during loose_route() */
+	dlg = dlg_api.get_dlg ? dlg_api.get_dlg() : NULL;
+	if (!dlg) {
+		dlg = dlg_api.get_dlg_by_callid(&callid, 1);
+		need_unref = (dlg != NULL);
+	}
+	if (!dlg) {
+		LM_ERR("no focus dialog for conference SUBSCRIBE %.*s (callid %.*s)\n",
+			presentity->len, presentity->s, callid.len, callid.s);
+		tmb.t_reply(msg, 481, &reason_481);
+		return -1;
+	}
+
+	conf_id = conf_id_from_uri(presentity);
+	if (conf_id.len == 0) {
+		LM_ERR("presentity %.*s is not a conference URI\n",
+			presentity->len, presentity->s);
+		if (need_unref)
+			dlg_api.dlg_unref(dlg, 1);
+		tmb.t_reply(msg, 481, &reason_481);
+		return -1;
+	}
+
+	/* 200 OK with Expires + Contact (in-dialog: the To-tag is preserved from
+	 * the request). Mirrors presence' send_2XX_reply; add_lump_rpl copies. */
+	hdr_append = pkg_malloc(9 /*"Expires: "*/ + MAX_INT_LEN + CRLF_LEN
+		+ 10 /*"Contact: <"*/ + presentity->len + 1 /*">"*/ + CRLF_LEN);
+	if (hdr_append) {
+		hlen = snprintf(hdr_append, 9 + MAX_INT_LEN + CRLF_LEN + 10
+				+ presentity->len + 1 + CRLF_LEN,
+			"Expires: %d\r\nContact: <%.*s>\r\n",
+			expires > 0 ? expires : 0, presentity->len, presentity->s);
+		if (hlen > 0)
+			add_lump_rpl(msg, hdr_append, hlen, LUMP_RPL_HDR);
+		pkg_free(hdr_append);
+	}
+	tmb.t_reply(msg, 200, &reason_ok);
+
 	body = conf_build_body(presentity);
 	if (!body) {
 		LM_ERR("failed to build conference roster for %.*s\n",
 			presentity->len, presentity->s);
+		if (need_unref)
+			dlg_api.dlg_unref(dlg, 1);
 		return -1;
 	}
 
-	if (pres_api.notify_all_on_publish(presentity, conf_event, body) < 0)
-		LM_ERR("failed to notify watchers of %.*s\n",
-			presentity->len, presentity->s);
+	if (expires <= 0) {
+		/* un-SUBSCRIBE: final NOTIFY then drop the watcher */
+		conf_send_notify(dlg, body, 0, 0, 1);
+		conf_sub_remove(&conf_id, &callid);
+	} else {
+		created = conf_sub_upsert(&conf_id, &callid, dlg->h_entry, dlg->h_id,
+			expires, &version);
+		if (created == 1)
+			conf_register_destroy_cb(dlg, &conf_id, &callid);
+		conf_send_notify(dlg, body, version, expires, 0);
+	}
 
 	pkg_free(body->s);
 	pkg_free(body);
+	if (need_unref)
+		dlg_api.dlg_unref(dlg, 1);
 	return 1;
 }
 
-static int conf_add_event(void)
+/* conference_notify(presentity): mixer membership changed; rebuild the roster
+ * and push a NOTIFY to every watcher of the focus URI. Called from the
+ * FreeSWITCH conference::maintenance event route. */
+static int conf_notify_f(struct sip_msg *msg, str *presentity)
 {
-	pres_ev_t event;
-	event_t ev;
+	str conf_id;
+	str *body;
+	struct conf_target *tg = NULL;
+	int n, i;
 
-	memset(&event, 0, sizeof event);
-	event.name.s = CONF_EVENT_NAME;
-	event.name.len = CONF_EVENT_NAME_LEN;
-	event.content_type.s = CONF_CONTENT_TYPE;
-	event.content_type.len = CONF_CONTENT_TYPE_LEN;
-	event.default_expires = conf_default_expires;
-	event.type = PUBL_TYPE;
-	event.mandatory_body = 0;
-	event.mandatory_timeout_notification = 0;
-	event.build_notify_body = conf_build_notify_body;
-	event.aux_body_processing = conf_body_setversion;
-	event.aux_free_body = (free_body_t *)pkg_free_w;
-	event.free_body = (free_body_t *)pkg_free_w;
-
-	if (pres_api.add_event(&event) < 0) {
-		LM_ERR("failed to register 'conference' event\n");
+	if (!presentity || presentity->len == 0) {
+		LM_ERR("empty presentity\n");
+		return -1;
+	}
+	conf_id = conf_id_from_uri(presentity);
+	if (conf_id.len == 0) {
+		LM_ERR("presentity %.*s is not a conference URI\n",
+			presentity->len, presentity->s);
 		return -1;
 	}
 
-	memset(&ev, 0, sizeof ev);
-	ev.parsed = EVENT_CONFERENCE;
-	ev.text = event.name;
-	conf_event = pres_api.search_event(&ev);
-	if (!conf_event) {
-		LM_CRIT("failed to look up the registered 'conference' event\n");
+	n = conf_sub_collect(&conf_id, &tg);
+	if (n < 0)
+		return -1;
+	if (n == 0) {
+		LM_DBG("no conference watchers for %.*s\n",
+			presentity->len, presentity->s);
+		return 1;
+	}
+
+	body = conf_build_body(presentity);
+	if (!body) {
+		LM_ERR("failed to build conference roster for %.*s\n",
+			presentity->len, presentity->s);
+		pkg_free(tg);
 		return -1;
 	}
 
-	return 0;
+	for (i = 0; i < n; i++) {
+		struct dlg_cell *dlg = dlg_api.get_dlg_by_ids(tg[i].h_entry,
+			tg[i].h_id, 1);
+		if (!dlg) {
+			LM_DBG("watcher dialog gone (h=%u/%u); skipping\n",
+				tg[i].h_entry, tg[i].h_id);
+			continue;
+		}
+		if (tg[i].expires_left <= 0)
+			conf_send_notify(dlg, body, tg[i].version, 0, 1);
+		else
+			conf_send_notify(dlg, body, tg[i].version, tg[i].expires_left, 0);
+		dlg_api.dlg_unref(dlg, 1);
+	}
+
+	pkg_free(body->s);
+	pkg_free(body);
+	pkg_free(tg);
+	return 1;
 }
+
+/* ---- module lifecycle ---------------------------------------------------- */
 
 static int mod_init(void)
 {
-	bind_presence_t bind_presence;
-
 	if (mrf_esl_url_param)
 		init_str(&mrf_esl_url, mrf_esl_url_param);
 	init_str(&conf_user_prefix, conf_user_prefix_param);
@@ -676,18 +1059,19 @@ static int mod_init(void)
 	if (mrf_esl_url.len == 0)
 		LM_WARN("mrf_esl_url is not set; conference rosters will be empty\n");
 
-	bind_presence = (bind_presence_t)find_export("bind_presence", 0);
-	if (!bind_presence) {
-		LM_ERR("cannot find presence API export\n");
+	if (load_dlg_api(&dlg_api) != 0) {
+		LM_ERR("cannot bind dialog API - is dialog loaded?\n");
 		return -1;
 	}
-	if (bind_presence(&pres_api) < 0) {
-		LM_ERR("cannot bind presence API\n");
+	if (!dlg_api.send_indialog_request || !dlg_api.get_dlg ||
+		!dlg_api.get_dlg_by_callid || !dlg_api.get_dlg_by_ids ||
+		!dlg_api.register_dlgcb || !dlg_api.dlg_unref) {
+		LM_ERR("dialog API is missing required functions\n");
 		return -1;
 	}
-	if (!pres_api.add_event || !pres_api.search_event ||
-		!pres_api.notify_all_on_publish) {
-		LM_ERR("presence API is missing required functions\n");
+
+	if (load_tm_api(&tmb) != 0) {
+		LM_ERR("cannot bind tm API - is tm loaded?\n");
 		return -1;
 	}
 
@@ -696,11 +1080,47 @@ static int mod_init(void)
 		return -1;
 	}
 
-	if (conf_add_event() < 0)
+	conf_tbl = shm_malloc(CONF_SUB_HASH * sizeof *conf_tbl);
+	if (!conf_tbl) {
+		LM_ERR("oom for conference subscription table\n");
 		return -1;
+	}
+	memset(conf_tbl, 0, CONF_SUB_HASH * sizeof *conf_tbl);
+
+	conf_lock = lock_alloc();
+	if (!conf_lock || !lock_init(conf_lock)) {
+		LM_ERR("failed to init conference subscription lock\n");
+		return -1;
+	}
 
 	LM_INFO("presence_conference initialized (mrf_esl_url=%.*s)\n",
 		mrf_esl_url.len, mrf_esl_url.s ? mrf_esl_url.s : "");
 
 	return 0;
+}
+
+static void mod_destroy(void)
+{
+	int b;
+	conf_sub_t *e, *next;
+
+	if (conf_tbl) {
+		for (b = 0; b < CONF_SUB_HASH; b++) {
+			for (e = conf_tbl[b]; e; e = next) {
+				next = e->next;
+				if (e->conf_id.s)
+					shm_free(e->conf_id.s);
+				if (e->callid.s)
+					shm_free(e->callid.s);
+				shm_free(e);
+			}
+		}
+		shm_free(conf_tbl);
+		conf_tbl = NULL;
+	}
+	if (conf_lock) {
+		lock_destroy(conf_lock);
+		lock_dealloc(conf_lock);
+		conf_lock = NULL;
+	}
 }

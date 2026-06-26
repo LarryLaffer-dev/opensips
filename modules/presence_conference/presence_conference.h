@@ -34,8 +34,8 @@
 #define CONF_INFO_NS          "urn:ietf:params:xml:ns:conference-info"
 
 /* 11-character monotonic-version placeholder (a 32-bit signed int has at most
- * 10 digits plus a sign). The per-watcher version is patched in by the presence
- * engine's aux_body_processing callback, mirroring presence_reginfo. */
+ * 10 digits plus a sign). The per-watcher version is patched into each NOTIFY
+ * body by conf_patch_version(), mirroring presence_reginfo. */
 #define CONF_VERSION_PLACEHOLDER "00000000000"
 #define MAX_INT_LEN 11
 
