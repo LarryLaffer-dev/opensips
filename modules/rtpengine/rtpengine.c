@@ -2492,13 +2492,24 @@ static int parse_flags(struct ng_flags_parse *ng_flags, struct sip_msg *msg,
 
 	if (iniface.len != 0 && outiface.len != 0) {
 		if (ng_flags->direction) {
-			bitem = bencode_str(bencode_item_buffer(ng_flags->direction), &iniface);
+			/* rtpengine maps direction[0] to the leg that sent this SDP and
+			 * direction[1] to the leg it is forwarded to. On an answer those
+			 * roles are reversed relative to the offer, so the same
+			 * in-iface/out-iface pair must be emitted in reversed order;
+			 * otherwise the offerer leg (e.g. the UE) is re-anchored onto the
+			 * far-side interface and handed the advertised/public address. */
+			str *dir_first = &iniface, *dir_second = &outiface;
+			if (op && *op == OP_ANSWER) {
+				dir_first = &outiface;
+				dir_second = &iniface;
+			}
+			bitem = bencode_str(bencode_item_buffer(ng_flags->direction), dir_first);
 			if (!bitem) {
-				err = iniface.s;
+				err = dir_first->s;
 				goto error;
 			}
 			BCHECK(bencode_list_add(ng_flags->direction, bitem));
-			bitem = bencode_str(bencode_item_buffer(ng_flags->direction), &outiface);
+			bitem = bencode_str(bencode_item_buffer(ng_flags->direction), dir_second);
 			if (!bitem) {
 				err = "no more memory for direction";
 				goto error;
