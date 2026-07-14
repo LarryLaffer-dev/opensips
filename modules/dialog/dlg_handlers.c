@@ -572,6 +572,24 @@ static inline void push_reply_in_dialog(struct sip_msg *req, struct sip_msg *rpl
 	}
 
 routing_info:
+	/* Early-dialog route-set capture for reliable provisionals (To-tag present).
+	 * The P-CSCF needs the callee leg's route-set + contact to build in-dialog
+	 * PRACK/UPDATE toward the UE before the final 2xx (RFC 3312 preconditions).
+	 * Use the SAME RR-skip as the 2xx path below (from_rr_nb + this branch's
+	 * added_rr) so the route-set holds only the hops from here toward the callee;
+	 * skip_rrs=0 would keep the full end-to-end set and the request would loop
+	 * back through the S-CSCF and this proxy instead of reaching the UE.
+	 * Topology hiding is already handled in update_leg_info(). */
+	if (rpl->REPLY_STATUS>100 && rpl->REPLY_STATUS<200 && tag.len &&
+	!(dlg->mod_flags & TOPOH_ONGOING)) {
+		skip_rrs = dlg->from_rr_nb +
+				TM_BRANCH(t, d_tmb.get_branch_index()).added_rr;
+		get_routing_info(rpl, 0, &skip_rrs, &contact, &rr_set);
+		dlg_update_routing(dlg, leg, &rr_set, &contact);
+		if (rr_set.s)
+			pkg_free(rr_set.s);
+	}
+
 	/* update dlg info only if 2xx reply and if not already done so */
 	if (rpl->REPLY_STATUS>=200 && rpl->REPLY_STATUS<300 &&
 	dlg->legs_no[DLG_LEG_200OK] != leg) {
@@ -2295,11 +2313,20 @@ after_unlock5:
 				LM_DBG("dlg_leg_get_cseq(dlg, [%d], req)\n", src_leg);
 				update_val = dlg_leg_get_cseq(dlg, src_leg, req);
 				if (update_val == 0) {
-					if (dlg->legs[dst_leg].last_gen_cseq) {
-						LM_DBG("dlg->legs[%d].last_gen_cseq=[%d]\n",
-							dst_leg, dlg->legs[dst_leg].last_gen_cseq);
-						update_val = dlg->legs[dst_leg].last_gen_cseq;
-					}
+					/* No CSeq mapping exists for this ACK, which means the
+					 * INVITE it acknowledges was forwarded verbatim (its
+					 * CSeq was NOT renumbered by the dialog module). This is
+					 * the case for the initial INVITE when the proxy issued
+					 * in-dialog requests (e.g. PRACK/UPDATE for RFC 3312
+					 * preconditions) that advanced last_gen_cseq before the
+					 * ACK arrived. Per RFC 3261 13.2.2.4 / 17.1.1.3 the ACK
+					 * MUST carry the same CSeq as the acknowledged INVITE,
+					 * so leave it untouched instead of forcing it to
+					 * last_gen_cseq (a different, later in-dialog
+					 * transaction), which makes the UAS discard the ACK. */
+					LM_DBG("no cseq map for ACK on leg %d; preserving "
+						"original CSeq (last_gen_cseq=%d)\n",
+						src_leg, dlg->legs[dst_leg].last_gen_cseq);
 				}
 				else {
 					LM_DBG("update_val=[%d]\n", update_val);

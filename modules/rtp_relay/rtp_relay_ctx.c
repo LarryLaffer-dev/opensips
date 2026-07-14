@@ -435,7 +435,15 @@ static void rtp_relay_b2b_local_reply(struct cell* t, int type,
 			sess, rtp_sess_late(sess), rtp_sess_ongoing(sess), leg->index);
 
 	info.branch = sess->index;
-	if (rtp_sess_late(sess) || !rtp_sess_ongoing(sess))
+	/* A reply carries the ANSWER to the offer that was in the request; it is
+	 * an offer only for late negotiation (offerless INVITE). Keying this off
+	 * the "ongoing" flag was wrong for reliable provisional responses:
+	 * rtp_relay_answer() clears "ongoing", so a retransmitted reliable 1xx
+	 * (e.g. a 183 the far end never PRACKs because it lacks 100rel) would flip
+	 * to rtp_relay_offer(), re-anchor the media and emit the internal-leg SDP
+	 * toward the peer -> one-way / no audio. Match the non-B2B reply path
+	 * (rtp_relay_ctx_leg_reply): offer iff late. */
+	if (rtp_sess_late(sess))
 		ret = rtp_relay_offer(&info, ctx, sess, ltype, &new_body);
 	else
 		ret = rtp_relay_answer(&info, ctx, sess, ltype, &new_body);
