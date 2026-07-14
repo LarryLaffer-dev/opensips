@@ -55,6 +55,7 @@ extern str dstlist_drr_col;
 extern str sort_alg_drr_col;
 extern str sort_profile_drr_col;
 extern str attrs_drr_col;
+extern str disabled_drr_col;
 
 /* DR carrier table related defs */
 extern str drc_table;

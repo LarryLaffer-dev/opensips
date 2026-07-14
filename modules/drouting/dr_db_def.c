@@ -62,6 +62,7 @@ str state_drd_col = str_init(STATE_DRD_COL);
 #define SORT_ALG_DRR_COL "sort_alg"
 #define SORT_PROFILE_DRR_COL "sort_profile"
 #define ATTRS_DRR_COL     "attrs"
+#define DISABLED_DRR_COL  "disabled"
 
 str drr_table = str_init("dr_rules");
 str rule_id_drr_col = str_init(RULE_ID_DRR_COL);
@@ -74,6 +75,7 @@ str dstlist_drr_col = str_init(DSTLIST_DRR_COL);
 str sort_alg_drr_col = str_init(SORT_ALG_DRR_COL);
 str sort_profile_drr_col = str_init(SORT_PROFILE_DRR_COL);
 str attrs_drr_col = str_init(ATTRS_DRR_COL);
+str disabled_drr_col = str_init(DISABLED_DRR_COL);
 
 /* DR carrier table related defs */
 #define ID_DRC_COL     "id"
