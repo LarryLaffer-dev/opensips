@@ -150,7 +150,18 @@ dlg_t * build_dialog_info(struct dlg_cell * cell, int dst_leg, int src_leg,
 		/*local sequence number*/
 		cseq = cell->legs[dst_leg].r_cseq;
 		if( !cseq.s || !cseq.len || str2int(&cseq, &loc_seq) != 0){
-			LM_ERR("invalid cseq\n");
+			/* In early dialog the destination leg may not be established yet
+			 * (no To-tag, hence no r_cseq recorded), e.g. when the P-CSCF
+			 * generates an in-dialog PRACK/UPDATE for RFC 3312 preconditions
+			 * before the peer leg exists. This is benign: the request simply
+			 * cannot be built yet, so avoid alarming ERROR spam for it while
+			 * still failing loud for genuinely corrupt state. */
+			if (cell->state <= DLG_STATE_EARLY &&
+			    !leg_is_answered(&cell->legs[dst_leg]))
+				LM_DBG("no cseq for leg %d: not established yet in early "
+					"dialog\n", dst_leg);
+			else
+				LM_ERR("invalid cseq\n");
 			goto error;
 		}
 
@@ -611,7 +622,15 @@ int send_leg_msg(struct dlg_cell *dlg,str *method,int src_leg,int dst_leg,
 	if ((dialog_info = build_dialog_info(dlg, dst_leg, src_leg,reply_marker,
 		!(method->len == 3 && memcmp(method->s, "ACK", 3) == 0))) == 0)
 	{
-		LM_ERR("failed to create dlg_t\n");
+		/* benign in early dialog when the target leg is not established yet
+		 * (see build_dialog_info) - keep quiet, it is expected during the
+		 * RFC 3312 precondition handshake and the call proceeds normally */
+		if (dlg->state <= DLG_STATE_EARLY &&
+		    !leg_is_answered(&dlg->legs[dst_leg]))
+			LM_DBG("cannot build in-dialog %.*s toward leg %d: not "
+				"established yet\n", method->len, method->s, dst_leg);
+		else
+			LM_ERR("failed to create dlg_t\n");
 		return -1;
 	}
 
