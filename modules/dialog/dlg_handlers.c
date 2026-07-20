@@ -182,6 +182,85 @@ int run_dlg_script_route(struct dlg_cell *dlg, int rt_idx)
 }
 
 
+/* Run a named script route as a reply handler for a locally-generated
+ * in-dialog request (e.g. the reply to a dlg_send_sequential PRACK). The
+ * route is executed with the dialog set in the processing context, so
+ * get_current_dialog()/$dlg_val work, and on the actual reply message so the
+ * reply pseudo-variables ($rs, $rr, ...) resolve. On a FAKED_REPLY (local
+ * timeout) it falls back to a dummy request message, leaving $rs empty.
+ *
+ * A private processing context is allocated instead of reusing
+ * push_new_processing_context() (which relies on a shared per-process static
+ * context): the executed route may itself call dlg_send_sequential(), which
+ * pushes a new processing context via send_leg_msg(); nesting the shared
+ * static context would trip its "nested setting" BUG guard and abort the
+ * follow-up request. */
+int run_dlg_reply_route(struct dlg_cell *dlg, int rt_idx, struct sip_msg *reply)
+{
+	context_p old_ctx, my_ctx;
+	int old_route_type;
+	struct usr_avp **old_avps;
+	struct usr_avp *local_avps = NULL;
+	struct sip_msg *fake_msg = NULL;
+	struct sip_msg *run_msg;
+
+	/************* pre-run sequance ****************/
+
+	my_ctx = context_alloc(CONTEXT_GLOBAL);
+	if (!my_ctx) {
+		LM_ERR("failed to alloc processing context for dlg reply route\n");
+		return -1;
+	}
+	memset(my_ctx, 0, context_size(CONTEXT_GLOBAL));
+
+	if (reply && reply != FAKED_REPLY) {
+		run_msg = reply;
+	} else {
+		fake_msg = get_dummy_sip_msg();
+		if (!fake_msg) {
+			LM_ERR("cannot create dummy sip request for dlg reply route\n");
+			context_free(my_ctx);
+			return -1;
+		}
+		run_msg = fake_msg;
+	}
+
+	old_ctx = current_processing_ctx;
+	set_global_context(my_ctx);
+	/* set the dialog in the ctx and ref it; the ref is released by
+	 * ctx_dlg_idx_destroy() when the context is destroyed below */
+	ctx_dialog_set(dlg);
+	ref_dlg(dlg, 1);
+
+	old_avps = set_avp_list( &local_avps );
+
+	swap_route_type(old_route_type,
+		(reply && reply != FAKED_REPLY) ? ONREPLY_ROUTE : REQUEST_ROUTE);
+
+	/************* actual run sequance ****************/
+	run_top_route( sroutes->request[rt_idx], run_msg);
+
+	/************* post-run sequance ****************/
+
+	set_route_type(old_route_type);
+
+	if (fake_msg)
+		release_dummy_sip_msg(fake_msg);
+
+	/* destroy our context (unrefs the dialog), restore the previous one
+	 * and free our context buffer */
+	context_destroy(CONTEXT_GLOBAL, my_ctx);
+	set_global_context(old_ctx);
+	context_free(my_ctx);
+
+	/* remove all added AVP and restore the original list */
+	set_avp_list( old_avps );
+	destroy_avp_list( &local_avps );
+
+	return 0;
+}
+
+
 static inline int add_dlg_rr_param(struct sip_msg *req, struct dlg_cell *dlg)
 {
 	static char buf[RR_DLG_PARAM_SIZE];

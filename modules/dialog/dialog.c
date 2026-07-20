@@ -160,7 +160,7 @@ static int dlg_on_timeout(struct sip_msg* msg, void *route_id);
 static int dlg_on_answer(struct sip_msg* msg, void *route_id);
 static int dlg_on_hangup(struct sip_msg* msg, void *route_id);
 static int dlg_send_sequential(struct sip_msg* msg, str *method, int leg,
-		str *body, str *ct, str *headers);
+		str *body, str *ct, str *headers, void *reply_route);
 static int dlg_inc_cseq(struct sip_msg *msg, str *tag, int *_count);
 
 
@@ -288,7 +288,8 @@ static const cmd_export_t cmds[]={
 		{CMD_PARAM_STR, fixup_leg, 0},
 		{CMD_PARAM_STR|CMD_PARAM_OPT, 0, 0},
 		{CMD_PARAM_STR|CMD_PARAM_OPT, 0, 0},
-		{CMD_PARAM_STR|CMD_PARAM_OPT, 0, 0}, {0,0,0}},
+		{CMD_PARAM_STR|CMD_PARAM_OPT, 0, 0},
+		{CMD_PARAM_STR|CMD_PARAM_OPT, fixup_route, free_fixup_route}, {0,0,0}},
 		ALL_ROUTES},
 	{"dlg_inc_cseq", (cmd_function)dlg_inc_cseq, {
 		{CMD_PARAM_STR|CMD_PARAM_OPT, 0, 0},
@@ -2651,11 +2652,54 @@ static int dlg_on_hangup(struct sip_msg* msg, void *ref)
 }
 
 
+/* parameter carried across the reply of a dlg_send_sequential request when a
+ * reply route is requested; the referenced route is executed when the (final)
+ * reply arrives */
+struct dlg_seq_reply_param {
+	struct dlg_cell *dlg;
+	struct script_route_ref *rt;
+};
+
+static int dlg_seq_reply_cb(struct sip_msg *reply, int statuscode, void *param)
+{
+	struct dlg_seq_reply_param *p = (struct dlg_seq_reply_param *)param;
+
+	if (!p)
+		return 0;
+
+	/* only react on final replies (provisional ones may arrive if the
+	 * transaction is configured to pass them) */
+	if (statuscode < 200)
+		return 0;
+
+	if (ref_script_route_check_and_update(p->rt))
+		run_dlg_reply_route(p->dlg, p->rt->idx, reply);
+	else
+		LM_ERR("reply route <%s> for sequential request is not available\n",
+			ref_script_route_name(p->rt));
+
+	return 0;
+}
+
+static void dlg_seq_reply_release(void *param)
+{
+	struct dlg_seq_reply_param *p = (struct dlg_seq_reply_param *)param;
+
+	if (!p)
+		return;
+	if (p->rt)
+		shm_free(p->rt);
+	unref_dlg(p->dlg, 1);
+	shm_free(p);
+}
+
 static int dlg_send_sequential(struct sip_msg* msg, str *method, int leg,
-		str *body, str *ct, str *headers)
+		str *body, str *ct, str *headers, void *reply_route)
 {
 	struct dlg_cell *dlg = get_current_dialog();
 	str invite = str_init("INVITE");
+	struct dlg_seq_reply_param *p = NULL;
+	int ret;
 
 	if (!dlg) {
 		LM_WARN("no current dialog found. Make sure you call this "
@@ -2667,6 +2711,36 @@ static int dlg_send_sequential(struct sip_msg* msg, str *method, int leg,
 
 	if (body && !ct)
 		LM_WARN("body without content type! This request might be rejected by uac!\n");
+
+	if (reply_route) {
+		p = shm_malloc(sizeof *p);
+		if (!p) {
+			LM_ERR("oom for sequential reply route param\n");
+			return -1;
+		}
+		p->rt = dup_ref_script_route_in_shm(
+				(struct script_route_ref *)reply_route, 0);
+		if (!ref_script_route_is_valid(p->rt)) {
+			LM_ERR("failed to duplicate reply route in shm\n");
+			if (p->rt)
+				shm_free(p->rt);
+			shm_free(p);
+			return -1;
+		}
+		p->dlg = dlg;
+		ref_dlg(dlg, 1);
+
+		ret = send_indialog_request(dlg, method,
+				(leg == DLG_CALLER_LEG?leg:callee_idx(dlg)),
+				body, ct, headers, dlg_seq_reply_cb, p,
+				dlg_seq_reply_release);
+		if (ret != 0) {
+			/* callback/release were not attached on failure */
+			dlg_seq_reply_release(p);
+			return -1;
+		}
+		return 1;
+	}
 
 	return send_indialog_request(dlg, method, (leg == DLG_CALLER_LEG?leg:callee_idx(dlg)),
 			body, ct, headers, NULL, NULL, NULL) == 0?1:-1;
