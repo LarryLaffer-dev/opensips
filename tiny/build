@@ -66,6 +66,11 @@ if [[ ${BUILDER_ONLY} -eq 1 ]]; then
     exit 0
 fi
 
+if [[ ${PUSH} -eq 1 ]]; then
+    # Authenticate to Harbor with the shared cnaas push robot before pushing.
+    . "${SCRIPT_DIR}/../../harbor-login.sh"
+fi
+
 for variant in "${SELECTED[@]}"; do
     TAG="${VERSION}-${variant}"
     FULL="${REGISTRY}/${IMAGE}:${TAG}"
