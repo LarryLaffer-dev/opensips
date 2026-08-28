@@ -353,23 +353,35 @@ static void rtp_relay_b2b_end(void *param)
 	rtp_relay_ctx_release(ctx);
 }
 
-static int rtp_relay_sess_b2b_success(struct rtp_relay_ctx *ctx,
-	struct rtp_relay_sess *sess)
+/* Drop the per-leg saved offer bodies. They exist only to feed a transparent
+ * B2B auth retry (401/407) with the original, un-rewritten SDP of the SAME
+ * offer. Once the offer transaction completes they must be discarded:
+ * rtp_relay_offer() prefers a saved body over the current message body, so a
+ * stale entry would make the next re-INVITE go out with the previous offer's
+ * SDP (e.g. a resume after hold would re-send the sendonly hold SDP and the
+ * call would never leave hold). */
+static void rtp_relay_sess_clear_saved_bodies(struct rtp_relay_sess *sess)
 {
 	int ltype;
-	rtp_sess_set_success(sess);
-	ctx->established = sess;
-	/* Clear the saved offer bodies now that the session is established.
-	 * They were only needed to give auth-retry INVITEs the original IMS SDP.
-	 * Clearing here ensures that subsequent re-INVITEs use their own fresh SDP
-	 * rather than the stale original from the initial INVITE. */
+	if (!sess)
+		return;
 	for (ltype = RTP_RELAY_CALLER; ltype <= RTP_RELAY_CALLEE; ltype++) {
 		if (sess->legs[ltype] &&
 				sess->legs[ltype]->flags[RTP_RELAY_FLAGS_BODY].s) {
 			shm_free(sess->legs[ltype]->flags[RTP_RELAY_FLAGS_BODY].s);
-			memset(&sess->legs[ltype]->flags[RTP_RELAY_FLAGS_BODY], 0, sizeof(str));
+			memset(&sess->legs[ltype]->flags[RTP_RELAY_FLAGS_BODY], 0,
+					sizeof(str));
 		}
 	}
+}
+
+static int rtp_relay_sess_b2b_success(struct rtp_relay_ctx *ctx,
+	struct rtp_relay_sess *sess)
+{
+	rtp_sess_set_success(sess);
+	ctx->established = sess;
+	/* Clear the saved offer bodies now that the session is established. */
+	rtp_relay_sess_clear_saved_bodies(sess);
 	if (!rtp_relay_ctx_established(ctx)) {
 		lock_start_write(rtp_relay_contexts_lock);
 		list_add(&ctx->list, rtp_relay_contexts);
@@ -733,6 +745,12 @@ static void rtp_relay_b2b_tm_reply(struct cell* t, int type, struct tmcb_params 
 		rtp_sess_reset_pending(rpl->sess);
 		return;
 	}
+	/* Final non-challenge reply: the offer transaction is complete, so the
+	 * saved offer body has served its purpose (see
+	 * rtp_relay_sess_clear_saved_bodies). Drop it so the next in-dialog
+	 * offer (e.g. resume after hold) is built from its own fresh SDP. */
+	if (p->code >= 200)
+		rtp_relay_sess_clear_saved_bodies(rpl->sess);
 	handle_rtp_relay_ctx_leg_reply(rpl->ctx, p->rpl, NULL, rpl->sess, rpl->type);
 }
 
