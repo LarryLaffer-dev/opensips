@@ -145,6 +145,8 @@ int ipsec_spi_match(struct ipsec_spi *spi, unsigned int ispi);
 extern unsigned int ipsec_min_spi;
 extern unsigned int ipsec_max_spi;
 extern int ipsec_tmp_timeout;
+extern unsigned int ipsec_reconcile_interval;
+extern unsigned int ipsec_reconcile_grace;
 
 int ipsec_init(void);
 void ipsec_destroy(void);

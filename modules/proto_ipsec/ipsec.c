@@ -45,6 +45,10 @@
 #include "ipsec_algo.h"
 #include "../../dprint.h"
 #include "../../context.h"
+#include "../../mem/mem.h"
+#include <time.h>
+#include <errno.h>
+#include <string.h>
 
 /*
  * Socket - IPSec Netlink/MNL socket
@@ -93,6 +97,9 @@ static gen_lock_t *ipsec_spi_lock;
 
 unsigned int ipsec_min_spi = IPSEC_DEFAULT_MIN_SPI;
 unsigned int ipsec_max_spi = IPSEC_DEFAULT_MAX_SPI;
+unsigned int ipsec_reconcile_interval = 30;
+unsigned int ipsec_reconcile_grace = 30;
+static unsigned int ipsec_reconcile_tick;
 
 static int ipsec_ctx_idx = -1;
 
@@ -1330,6 +1337,167 @@ void ipsec_ctx_release_user(struct ipsec_ctx *ctx)
 		ipsec_release_user(user);
 }
 
+/*
+ * XFRM reconciliation: kernel SAs tagged with IPSEC_USER_SELECTOR that no
+ * live TMP/OK ctx claims are orphans (TMP expiry leak before the refcount
+ * fix, leftovers after a hostNetwork restart, or a failed create that left
+ * a selector behind). Delete them after reconcile_grace seconds.
+ */
+struct ipsec_xfrm_orphan {
+	unsigned int spi;
+	int family;
+	xfrm_address_t daddr;
+	xfrm_address_t saddr;
+	struct xfrm_selector sel;
+	struct ipsec_xfrm_orphan *next;
+};
+
+static void xfrm_addr_to_ip(int family, const xfrm_address_t *a, struct ip_addr *ip)
+{
+	memset(ip, 0, sizeof(*ip));
+	if (family == AF_INET) {
+		ip->af = AF_INET;
+		ip->len = 4;
+		memcpy(&ip->u.addr, &a->a4, 4);
+	} else {
+		ip->af = AF_INET6;
+		ip->len = 16;
+		memcpy(&ip->u.addr, &a->a6, 16);
+	}
+}
+
+static int ipsec_xfrm_dump_cb(const struct nlmsghdr *nlh, void *data)
+{
+	struct xfrm_usersa_info *sa;
+	struct ipsec_xfrm_orphan **head = data;
+	struct ipsec_xfrm_orphan *o;
+	struct ip_addr src, dst;
+	unsigned short sport, dport;
+	time_t now, age;
+
+	if (nlh->nlmsg_type != XFRM_MSG_NEWSA)
+		return MNL_CB_OK;
+	sa = mnl_nlmsg_get_payload(nlh);
+	if (sa->sel.user != IPSEC_USER_SELECTOR)
+		return MNL_CB_OK;
+
+	now = time(NULL);
+	age = (sa->curlft.add_time && now > (time_t)sa->curlft.add_time) ?
+		(now - (time_t)sa->curlft.add_time) : (time_t)ipsec_reconcile_grace + 1;
+	if (age < (time_t)ipsec_reconcile_grace)
+		return MNL_CB_OK;
+
+	xfrm_addr_to_ip(sa->sel.family, &sa->sel.saddr, &src);
+	xfrm_addr_to_ip(sa->sel.family, &sa->sel.daddr, &dst);
+	sport = ntohs(sa->sel.sport);
+	dport = ntohs(sa->sel.dport);
+	if (ipsec_users_claim_port(&src, sport) || ipsec_users_claim_port(&src, dport) ||
+			ipsec_users_claim_port(&dst, sport) || ipsec_users_claim_port(&dst, dport))
+		return MNL_CB_OK;
+
+	o = pkg_malloc(sizeof(*o));
+	if (!o) {
+		LM_ERR("oom for XFRM orphan\n");
+		return MNL_CB_OK;
+	}
+	memset(o, 0, sizeof(*o));
+	o->spi = ntohl(sa->id.spi);
+	o->family = sa->sel.family;
+	o->daddr = sa->id.daddr;
+	o->saddr = sa->saddr;
+	o->sel = sa->sel;
+	o->next = *head;
+	*head = o;
+	return MNL_CB_OK;
+}
+
+static void ipsec_xfrm_del_orphan(struct ipsec_socket *sock, struct ipsec_xfrm_orphan *o)
+{
+	char buf[MNL_SOCKET_BUFFER_SIZE];
+	struct nlmsghdr *nlh;
+	struct xfrm_usersa_id *sa_id;
+	struct xfrm_userpolicy_id *policy_id;
+	int dir;
+
+	memset(buf, 0, sizeof buf);
+	nlh = mnl_nlmsg_put_header(buf);
+	if (nlh) {
+		nlh->nlmsg_flags = NLM_F_REQUEST;
+		nlh->nlmsg_type = XFRM_MSG_DELSA;
+		nlh->nlmsg_seq = ++ipsec_seq;
+		sa_id = mnl_nlmsg_put_extra_header(nlh, sizeof(*sa_id));
+		if (sa_id) {
+			sa_id->spi = htonl(o->spi);
+			sa_id->proto = IPPROTO_ESP;
+			sa_id->family = o->family;
+			sa_id->daddr = o->daddr;
+			mnl_attr_put(nlh, XFRMA_SRCADDR, sizeof(o->saddr), &o->saddr);
+			if (mnl_socket_sendto(sock, nlh, nlh->nlmsg_len) < 0)
+				LM_ERR("reconcile DELSA spi=%u: %s\n", o->spi, strerror(errno));
+		}
+	}
+
+	for (dir = XFRM_POLICY_IN; dir <= XFRM_POLICY_OUT; dir++) {
+		memset(buf, 0, sizeof buf);
+		nlh = mnl_nlmsg_put_header(buf);
+		if (!nlh)
+			continue;
+		nlh->nlmsg_flags = NLM_F_REQUEST;
+		nlh->nlmsg_type = XFRM_MSG_DELPOLICY;
+		nlh->nlmsg_seq = ++ipsec_seq;
+		policy_id = mnl_nlmsg_put_extra_header(nlh, sizeof(*policy_id));
+		if (!policy_id)
+			continue;
+		policy_id->dir = dir;
+		policy_id->sel = o->sel;
+		mnl_socket_sendto(sock, nlh, nlh->nlmsg_len);
+	}
+	LM_INFO("reconciled orphan XFRM SA spi=%u\n", o->spi);
+}
+
+static void ipsec_xfrm_reconcile(void)
+{
+	char buf[MNL_SOCKET_BUFFER_SIZE];
+	struct nlmsghdr *nlh;
+	struct ipsec_socket *sock;
+	struct ipsec_xfrm_orphan *head = NULL, *o, *next;
+	int ret, deleted = 0;
+
+	sock = ipsec_sock_new();
+	if (!sock)
+		return;
+
+	memset(buf, 0, sizeof buf);
+	nlh = mnl_nlmsg_put_header(buf);
+	if (!nlh)
+		goto out;
+	nlh->nlmsg_type = XFRM_MSG_GETSA;
+	nlh->nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
+	nlh->nlmsg_seq = ++ipsec_seq;
+	if (mnl_socket_sendto(sock, nlh, nlh->nlmsg_len) < 0) {
+		LM_ERR("reconcile GETSA dump: %s\n", strerror(errno));
+		goto out;
+	}
+	ret = mnl_socket_recvfrom(sock, buf, sizeof buf);
+	while (ret > 0) {
+		ret = mnl_cb_run(buf, ret, 0, 0, ipsec_xfrm_dump_cb, &head);
+		if (ret <= MNL_CB_STOP)
+			break;
+		ret = mnl_socket_recvfrom(sock, buf, sizeof buf);
+	}
+
+	for (o = head; o; o = next) {
+		next = o->next;
+		ipsec_xfrm_del_orphan(sock, o);
+		deleted++;
+		pkg_free(o);
+	}
+	if (deleted)
+		LM_INFO("XFRM reconcile removed %d orphan SA(s)\n", deleted);
+out:
+	ipsec_sock_close(sock);
+}
+
 void ipsec_ctx_timer(unsigned int ticks, void* param)
 {
 	struct list_head *it, *safe, *prev = NULL;
@@ -1354,7 +1522,7 @@ void ipsec_ctx_timer(unsigned int ticks, void* param)
 	if (!prev) {
 		LM_DBG("No expired contexts found\n");
 		lock_release(ipsec_tmp_contexts_lock);
-		return; /* nothing to do */
+		goto reconcile;
 	}
 	/* unlink from the shared list */
 	if (prev)
@@ -1369,16 +1537,41 @@ void ipsec_ctx_timer(unsigned int ticks, void* param)
 		if (VALID_IPSEC_STATE(tmp->ctx->state)) {
 			lock_get(&tmp->ctx->lock);
 			LM_DBG("Got lock for context %p (state %d)\n", tmp->ctx, tmp->ctx->state);
-			if (tmp->ctx->state == IPSEC_STATE_TMP) {
-				tmp->ctx->state = IPSEC_STATE_INVALID;
+			if (tmp->ctx->state == IPSEC_STATE_TMP)
 				LM_ERR("IPSec ctx %p expired\n", tmp->ctx);
-			}
 			list_del(&tmp->list);
 			ctx = tmp->ctx;
-			free = IPSEC_CTX_UNREF_UNSAFE(tmp->ctx);
-			lock_release(&tmp->ctx->lock);
-			LM_DBG("Released lock for context %p (state %d), free=%d\n", ctx, ctx->state, free);
+			/* Drop the TMP-list ref. push_user() took +2 (user list + tmp
+			 * list); without also dropping the user-list ref below,
+			 * ipsec_ctx_free() never runs and kernel XFRM SAs leak. */
+			free = IPSEC_CTX_UNREF_UNSAFE(ctx);
+			lock_release(&ctx->lock);
 			shm_free(tmp);
+
+			/*
+			 * Always tear down kernel SAs on TMP expiry. The UE never sent
+			 * the protected REGISTER (no 200 OK), so these selectors are
+			 * dead. Leaving them blocks the next attempt (NLM_F_EXCL) and
+			 * they survive OpenSIPS restarts (hostNetwork).
+			 */
+			{
+				struct ipsec_socket *rm_sock = ipsec_sock_new();
+				if (rm_sock) {
+					ipsec_sa_rm_all(rm_sock, ctx);
+					ipsec_sock_close(rm_sock);
+				}
+			}
+
+			if (ctx->user)
+				ipsec_ctx_release_user(ctx);
+
+			lock_get(&ctx->lock);
+			if (!free)
+				free = IPSEC_CTX_UNREF_UNSAFE(ctx);
+			if (free)
+				ctx->state = IPSEC_STATE_INVALID;
+			lock_release(&ctx->lock);
+			LM_DBG("Released lock for context %p (state %d), free=%d\n", ctx, ctx->state, free);
 			if (free)
 				ipsec_ctx_free(ctx);
 			LM_DBG("IPSec ctx %p deleted\n", ctx);
@@ -1389,6 +1582,13 @@ void ipsec_ctx_timer(unsigned int ticks, void* param)
 		}
 	}
 	LM_DBG("Finished removing expired contexts\n");
+
+reconcile:
+	if (ipsec_reconcile_interval &&
+			++ipsec_reconcile_tick >= ipsec_reconcile_interval) {
+		ipsec_reconcile_tick = 0;
+		ipsec_xfrm_reconcile();
+	}
 }
 
 void ipsec_ctx_remove_tmp(struct ipsec_ctx *ctx)
