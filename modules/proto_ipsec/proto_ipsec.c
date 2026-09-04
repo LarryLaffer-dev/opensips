@@ -354,7 +354,8 @@ static int mod_init(void)
 	}
 
 	if (ul_ipsec.register_ulcb(UL_CONTACT_INSERT|UL_CONTACT_UPDATE|
-			UL_CONTACT_DELETE|UL_CONTACT_EXPIRE, ipsec_usrloc_handler) < 0) {
+			UL_CONTACT_DELETE|UL_CONTACT_EXPIRE|UL_CONTACT_LOAD,
+			ipsec_usrloc_handler) < 0) {
 		LM_ERR("can not register callback for usrloc\n");
 		return -1;
 	}
@@ -1547,6 +1548,14 @@ static void ipsec_usrloc_restore(ucontact_t *contact)
 	sa.ts3gpp.port_s = UL_GET_I(contact, ipsec_usrloc_port_us, "port_us");
 
 	ss = (struct socket_info *)contact->sock;
+	if (!ss) {
+		/* usrloc could not resolve the stored socket to a local listener:
+		 * the contact belongs to a different node (shared location table)
+		 * or the listeners changed since it was saved */
+		LM_WARN("no local socket for contact %.*s - skipping IPSec restore\n",
+				contact->c.len, contact->c.s);
+		return;
+	}
 	sc = find_ipsec_socket_info(&ss->address, port_pc, 0, 0);
 	if (!sc) {
 		LM_INFO("could not find a client listener on %.*s:%d!\n",
@@ -1695,6 +1704,11 @@ void ipsec_usrloc_handler(void *binding, ul_cb_type type, ul_cb_extra *extra)
 	switch (type) {
 		case UL_CONTACT_INSERT:
 			ipsec_usrloc_insert(contact);
+			break;
+		case UL_CONTACT_LOAD:
+			/* contact restored from SQL at startup: rebuild the SAs from
+			 * the stored ipsec.* keys */
+			ipsec_usrloc_restore(contact);
 			break;
 		case UL_CONTACT_UPDATE:
 			if (extra)
