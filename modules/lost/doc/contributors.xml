@@ -1,0 +1,21 @@
+<!-- THIS IS AN AUTO-GENERATED FILE -->
+<chapter id="contributors" xreflabel="contributors">
+    <title>&contributors;</title>
+
+<section id="contrib_commit_statistics" xreflabel="contrib_commit_statistics">
+	<title>By Commit Statistics</title>
+	<para>
+	This module was ported from Kamailio, where it was written and is
+	maintained by Wolfgang Kampichler (DEC112, FREQUENTIS AG).
+	</para>
+</section>
+
+</chapter>
+<chapter id="documentation" xreflabel="documentation">
+	<title>Documentation</title>
+<section id="documentation_contributors" xreflabel="documentation_contributors">
+	<title>Contributors</title>
+	<para><emphasis role='bold'>Last edited by:</emphasis> ng-voice GmbH.</para>
+</section>
+
+</chapter>

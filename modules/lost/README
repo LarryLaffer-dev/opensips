@@ -1,0 +1,453 @@
+lost Module
+     __________________________________________________________
+
+   Table of Contents
+
+   1. Admin Guide
+
+        1.1. Overview
+        1.2. Asynchronous Operation
+        1.3. Return Codes
+        1.4. Dependencies
+
+              1.4.1. OpenSIPS Modules
+              1.4.2. External Libraries or Applications
+
+        1.5. Exported Parameters
+
+              1.5.1. connection (string)
+              1.5.2. location_type (string)
+              1.5.3. exact_type (integer)
+              1.5.4. response_time (integer)
+              1.5.5. post_request (integer)
+              1.5.6. geoheader_type (integer)
+              1.5.7. geoheader_order (integer)
+              1.5.8. geoheader_incl_alt (integer)
+              1.5.9. location_profile (integer)
+              1.5.10. recursion (integer)
+              1.5.11. verbose (integer)
+
+        1.6. Exported Functions
+
+              1.6.1. lost_query(con, uri, name, err[, pidf[,
+                      urn]])
+
+              1.6.2. lost_held_query(con, pidf, url, err[, id])
+              1.6.3. lost_held_dereference(url, pidf, err[,
+                      rtime[, rtype]])
+
+        1.7. Exported Statistics
+
+              1.7.1. held_requests
+              1.7.2. held_failures
+              1.7.3. lost_requests
+              1.7.4. lost_failures
+
+   2. Contributors
+
+        2.1. By Commit Statistics
+
+   3. Documentation
+
+        3.1. Contributors
+
+   List of Examples
+
+   1.1. Asynchronous location retrieval and mapping
+   1.2. Setting the connection parameter
+   1.3. Setting the location_type parameter
+   1.4. Setting the exact_type parameter
+   1.5. Setting the response_time parameter
+   1.6. Setting the post_request parameter
+   1.7. Setting the geoheader_type parameter
+   1.8. Setting the geoheader_order parameter
+   1.9. Setting the geoheader_incl_alt parameter
+   1.10. Setting the location_profile parameter
+   1.11. Setting the recursion parameter
+   1.12. Setting the verbose parameter
+   1.13. lost_query usage
+   1.14. lost_held_query usage
+   1.15. lost_held_dereference usage
+
+Chapter 1. Admin Guide
+
+1.1. Overview
+
+   The lost module is a client for the two HTTP-based protocols an
+   Emergency-CSCF needs in order to route an emergency call:
+     * HELD (HTTP Enabled Location Delivery, RFC 6155) to ask a
+       Location Information Server (LIS) where the caller is, and
+       to dereference a location URI (RFC 6753).
+     * LoST (Location-to-Service Translation, RFC 5222) to ask an
+       Emergency Call Routing Function (ECRF) which PSAP serves
+       that location for a given service URN (RFC 5031).
+
+   The caller location is taken from the PIDF-LO carried by the
+   request: either by value from a multipart/related body part
+   referenced by a Geolocation: <cid:...> header (which is what a
+   3GPP UE sends, see TS 24.229), or by reference from a
+   Geolocation: <https://...> header, or passed directly as a
+   function parameter.
+
+   All HTTP work is delegated to the rest_client module, so TLS,
+   connection reuse and timeouts behave exactly as they do there.
+
+1.2. Asynchronous Operation
+
+   Every exported function is available both as a regular function
+   and as an async one. Since an emergency call needs two serial
+   round trips to external servers, running them synchronously
+   blocks a SIP worker for the entire duration of the exchange.
+   Prefer the async flavour:
+
+   Example 1.1. Asynchronous location retrieval and mapping
+...
+route[EMERGENCY] {
+        async(lost_held_query("lis", $var(pidf), $var(locuri), $var(err)
+),
+                LOC_DONE);
+}
+
+route[LOC_DONE] {
+        async(lost_query("ecrf", $var(psap), $var(psapname), $var(err),
+                $var(pidf)), MAP_DONE);
+}
+
+route[MAP_DONE] {
+        $ru = $var(psap);
+        t_relay();
+}
+...
+
+   Only the first HTTP exchange of a function call is
+   asynchronous. Two secondary exchanges are always performed
+   synchronously, because both are avoidable in practice:
+     * the dereference of a locationURI when a HELD
+       locationResponse contains no presence element --
+       dereference the returned URI yourself with an async
+       lost_held_dereference() instead;
+     * following a LoST redirect, which does not happen with the
+       default recursion setting, since the mapping server then
+       resolves the chain itself.
+
+1.3. Return Codes
+
+   All functions return a positive value on success and a negative
+   one on failure, so they can be tested directly in a condition.
+   The magnitude carries the detail and is available in $rc:
+     * 200 -- success. lost_held_dereference() refines this to 201
+       when the response held a location reference, 202 a location
+       value, and 203 both.
+     * -400 -- the exchange failed locally: bad parameters, no
+       location found, transport error, or a non-2xx HTTP status.
+     * -500 -- the LIS or ECRF answered with a protocol error
+       response. The error code or type is written to the err
+       output variable.
+
+   Note that the output variables are only written when the
+   exchange completed, so a script must check the return code
+   before using them.
+
+1.4. Dependencies
+
+1.4.1. OpenSIPS Modules
+
+   The following modules must be loaded before this module:
+     * rest_client -- performs all HTTP transfers.
+     * tls_mgm -- only when a connection uses the tls_dom
+       property.
+
+1.4.2. External Libraries or Applications
+
+   The following libraries or applications must be installed
+   before running OpenSIPS with this module loaded:
+     * libxml2.
+
+1.5. Exported Parameters
+
+1.5.1. connection (string)
+
+   Defines a named LIS or ECRF server, which the exported
+   functions then reference by name. The format is:
+
+   name=>url=<url>[;timeout=<seconds>][;tls_dom=<domain>]
+     * url (mandatory) -- the HTTP(S) endpoint.
+     * timeout -- maximum duration of a transfer, in seconds.
+       Defaults to the rest_client curl_timeout setting.
+     * tls_dom -- a tls_mgm client domain, for server verification
+       and client certificates (mutual TLS).
+
+   The parameter may be set multiple times. Names must be unique.
+
+   Example 1.2. Setting the connection parameter
+...
+modparam("lost", "connection", "lis=>url=https://lis.example.org/held;ti
+meout=3;tls_dom=ecscf")
+modparam("lost", "connection", "ecrf=>url=https://ecrf.example.org/lost;
+timeout=3;tls_dom=ecscf")
+...
+
+1.5.2. location_type (string)
+
+   The locationType requested from the LIS. Any combination of
+   "civic", "geodetic", "locationURI" and "any", separated by
+   spaces.
+
+   Default value is "geodetic locationURI".
+
+   Example 1.3. Setting the location_type parameter
+...
+modparam("lost", "location_type", "civic geodetic")
+...
+
+1.5.3. exact_type (integer)
+
+   When set to 1, the locationRequest asks for an exact match of
+   location_type (exact="true"), meaning the LIS must return every
+   requested type or fail.
+
+   Default value is "0".
+
+   Example 1.4. Setting the exact_type parameter
+...
+modparam("lost", "exact_type", 1)
+...
+
+1.5.4. response_time (integer)
+
+   The responseTime of a locationRequest, in milliseconds. A value
+   of 0 requests emergencyRouting, i.e. the fastest answer the LIS
+   can give.
+
+   Default value is "0".
+
+   Example 1.5. Setting the response_time parameter
+...
+modparam("lost", "response_time", 500)
+...
+
+1.5.5. post_request (integer)
+
+   When set to 1, a location URI is dereferenced with a HELD
+   locationRequest POST instead of a plain GET.
+
+   Default value is "0".
+
+   Example 1.6. Setting the post_request parameter
+...
+modparam("lost", "post_request", 1)
+...
+
+1.5.6. geoheader_type (integer)
+
+   Which kind of Geolocation header value to use:
+     * 0 -- any (first one found)
+     * 1 -- cid: only, i.e. location by value from the message
+       body
+     * 2 -- HTTP(S) URI only, i.e. location by reference
+
+   Default value is "0".
+
+   Example 1.7. Setting the geoheader_type parameter
+...
+modparam("lost", "geoheader_type", 1)
+...
+
+1.5.7. geoheader_order (integer)
+
+   Which Geolocation header to prefer when the request carries
+   more than one: 0 for the last, 1 for the first.
+
+   Default value is "0".
+
+   Example 1.8. Setting the geoheader_order parameter
+...
+modparam("lost", "geoheader_order", 1)
+...
+
+1.5.8. geoheader_incl_alt (integer)
+
+   When set to 1, altitude is kept in the location sent to the
+   mapping server. Most ECRFs only map latitude and longitude.
+
+   Default value is "0".
+
+   Example 1.9. Setting the geoheader_incl_alt parameter
+...
+modparam("lost", "geoheader_incl_alt", 1)
+...
+
+1.5.9. location_profile (integer)
+
+   Which location profile to send in a findService request when
+   the PIDF-LO holds both a civic and a geodetic location (RFC
+   5222 §8.3):
+     * 0 -- both, geodetic preferred
+     * 1 -- both, civic preferred
+     * 2 -- geodetic only
+     * 3 -- civic only
+
+   Default value is "0".
+
+   Example 1.10. Setting the location_profile parameter
+...
+modparam("lost", "location_profile", 2)
+...
+
+1.5.10. recursion (integer)
+
+   Sets recursive="true" on a findService request, asking the
+   mapping server to resolve any referral itself. With 0, the
+   module follows redirects on its own, synchronously.
+
+   Default value is "1".
+
+   Example 1.11. Setting the recursion parameter
+...
+modparam("lost", "recursion", 0)
+...
+
+1.5.11. verbose (integer)
+
+   When set to 1, the parsed contents of every findServiceResponse
+   are written to the log.
+
+   Default value is "0".
+
+   Example 1.12. Setting the verbose parameter
+...
+modparam("lost", "verbose", 1)
+...
+
+1.6. Exported Functions
+
+1.6.1.  lost_query(con, uri, name, err[, pidf[, urn]])
+
+   Sends a LoST findService request to a mapping server and
+   returns the URI of the serving PSAP.
+
+   Parameters:
+     * con (string) -- name of a connection. If no such connection
+       exists, the value is treated as a domain and resolved via a
+       LoST:https or LoST:http NAPTR lookup.
+     * uri (var) -- output: the PSAP URI.
+     * name (var) -- output: the PSAP display name.
+     * err (var) -- output: the LoST error type, if the mapping
+       server returned an error response.
+     * pidf (string, optional) -- the PIDF-LO to map. When absent,
+       it is taken from the Geolocation header, as controlled by
+       geoheader_type.
+     * urn (string, optional) -- the service URN to map. Defaults
+       to the Request URI.
+
+   See Return Codes.
+
+   This function can be used from any route. An async variant is
+   available.
+
+   Example 1.13. lost_query usage
+...
+if (!lost_query("ecrf", $var(psap), $var(name), $var(err))) {
+        xlog("L_ERR", "LoST failed: $var(err)\n");
+        send_reply(503, "Service Unavailable");
+        exit;
+}
+$ru = $var(psap);
+...
+
+1.6.2.  lost_held_query(con, pidf, url, err[, id])
+
+   Sends a HELD locationRequest to a LIS and returns the caller
+   location.
+
+   Parameters:
+     * con (string) -- name of a connection. When it does not name
+       a connection, the LIS is discovered with a LIS:HELD NAPTR
+       lookup on the device identity.
+     * pidf (var) -- output: the returned PIDF-LO.
+     * url (var) -- output: the returned location URI, if the
+       response carries a locationUriSet.
+     * err (var) -- output: the HELD error code, if the LIS
+       returned an error response.
+     * id (string, optional) -- the device identity to ask about.
+       Defaults to P-Asserted-Identity, then From.
+
+   See Return Codes.
+
+   This function can be used from any route. An async variant is
+   available.
+
+   Example 1.14. lost_held_query usage
+...
+if (!lost_held_query("lis", $var(pidf), $var(locuri), $var(err))) {
+        xlog("L_ERR", "HELD failed: $var(err)\n");
+}
+...
+
+1.6.3.  lost_held_dereference(url, pidf, err[, rtime[, rtype]])
+
+   Dereferences a location URI (RFC 6753) and returns the PIDF-LO
+   found there.
+
+   Parameters:
+     * url (string) -- the location URI to dereference.
+     * pidf (var) -- output: the returned PIDF-LO.
+     * err (var) -- output: the HELD error code, if the server
+       returned an error response.
+     * rtime (string, optional) -- the responseTime: a number of
+       milliseconds, or one of "emergencyRouting" and
+       "emergencyDispatch". Defaults to "emergencyRouting".
+     * rtype (string, optional) -- the locationType to request,
+       overriding location_type.
+
+   See Return Codes.
+
+   This function can be used from any route. An async variant is
+   available.
+
+   Example 1.15. lost_held_dereference usage
+...
+if (!lost_held_dereference($var(locuri), $var(pidf), $var(err),
+                "emergencyRouting", "geodetic")) {
+        xlog("L_ERR", "dereference failed: $var(err)\n");
+}
+...
+
+1.7. Exported Statistics
+
+1.7.1. held_requests
+
+   Number of HELD requests sent to a LIS.
+
+1.7.2. held_failures
+
+   Number of HELD requests that failed at the transport level or
+   returned a non-2xx status.
+
+1.7.3. lost_requests
+
+   Number of LoST requests sent to a mapping server.
+
+1.7.4. lost_failures
+
+   Number of LoST requests that failed at the transport level or
+   returned a non-2xx status.
+
+Chapter 2. Contributors
+
+2.1. By Commit Statistics
+
+   This module was ported from Kamailio, where it was written and
+   is maintained by Wolfgang Kampichler (DEC112, FREQUENTIS AG).
+
+Chapter 3. Documentation
+
+3.1. Contributors
+
+   Last edited by: ng-voice GmbH.
+
+   Documentation Copyrights:
+
+   Copyright © 2019 Wolfgang Kampichler, DEC112, FREQUENTIS AG
+
+   Copyright © 2026 ng-voice GmbH (OpenSIPS port)

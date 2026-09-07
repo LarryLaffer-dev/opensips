@@ -441,6 +441,21 @@ Description: LDAP modules for OpenSIPS
  queries from the OpenSIPS config and storage of SIP account data in an LDAP
  directory.
 
+Package: opensips-lost-module
+Architecture: any
+Multi-Arch: same
+Depends: opensips (= ${binary:Version}), opensips-restclient-module,
+         ${misc:Depends}, ${shlibs:Depends}
+Description: LoST and HELD client for OpenSIPS
+ OpenSIPS is a very fast and flexible SIP (RFC3261)
+ server. Written entirely in C, OpenSIPS can handle thousands calls
+ per second even on low-budget hardware.
+ .
+ This package provides the lost module, a client for the Location-to-Service
+ Translation protocol (RFC 5222) and HTTP Enabled Location Delivery
+ (RFC 6155), used by an Emergency-CSCF to obtain the caller location from a
+ LIS and the serving PSAP URI from an ECRF.
+
 Package: opensips-lua-module
 Architecture: any
 Multi-Arch: same

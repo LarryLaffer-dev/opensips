@@ -52,24 +52,9 @@ extern unsigned int curl_conn_lifetime;
 /* handle for use with synchronous reqs */
 extern CURL *sync_handle;
 
-/* Currently supported HTTP verbs */
-enum rest_client_method {
-	REST_CLIENT_GET,
-	REST_CLIENT_PUT,
-	REST_CLIENT_POST
-};
-#define rest_client_method_str(_m) ( \
-	(_m) == REST_CLIENT_GET ? "GET" : \
-	(_m) == REST_CLIENT_POST ? "POST" : "PUT")
-
-/* return codes for rest_client script functions */
-#define RCL_OK_LOCKED            2
-#define RCL_OK                   1
-#define RCL_CONNECT_REFUSED     -1
-#define RCL_CONNECT_TIMEOUT     -2
-#define RCL_TRANSFER_TIMEOUT    -3
-#define RCL_ALREADY_CONNECTING  -4
-#define RCL_INTERNAL_ERR       -10
+/* the HTTP verbs and RCL_* return codes live in api.h, so that other
+ * modules can consume the API without needing the libcurl headers */
+#include "api.h"
 
 typedef struct _rest_trace_param {
 	str callid;
@@ -122,6 +107,15 @@ typedef struct rest_async_param_ {
 	pv_spec_p body_pv;
 	pv_spec_p ctype_pv;
 	pv_spec_p code_pv;
+
+	/* Raw mode, used by the module API (api.h) instead of the script
+	 * functions: results are handed back through these pointers rather than
+	 * written into pvars, and ownership of the body buffer passes to the
+	 * caller.  When set, the *_pv fields above are ignored. */
+	int raw;
+	str *out_body;
+	str *out_ctype;
+	int *out_code;
 } rest_async_param;
 
 int init_sync_handle(void);
@@ -131,6 +125,22 @@ int rest_sync_transfer(enum rest_client_method method, struct sip_msg *msg,
                        pv_spec_p ctype_pv, pv_spec_p code_pv);
 int rcl_acquire_url(const char *url, char **url_host);
 void rcl_release_url(char *url_host, int update_conn_ts);
+
+/* raw (module API) entry points -- see api.h for the calling contract */
+int rcl_sync_transfer_raw(enum rest_client_method method, struct sip_msg *msg,
+                       const str *url, const str *body, const str *ctype,
+                       const str *hdrs, str *out_body, str *out_ctype,
+                       int *out_code);
+int rcl_start_async_raw(struct sip_msg *msg, enum rest_client_method method,
+                       const str *url, const str *body, const str *ctype,
+                       const str *hdrs, unsigned int timeout_s, void **handle,
+                       str *out_body, str *out_ctype, int *out_code,
+                       enum async_ret_code *out_fd);
+enum async_ret_code rcl_resume_async_raw(int fd, struct sip_msg *msg,
+                       void *handle, str *out_body, str *out_ctype,
+                       int *out_code);
+enum async_ret_code rcl_timeout_async_raw(int fd, struct sip_msg *msg,
+                       void *handle);
 
 int start_async_http_req(struct sip_msg *msg, enum rest_client_method method,
                          char *url, str *req_body, str *req_ctype,

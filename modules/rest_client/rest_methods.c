@@ -680,27 +680,88 @@ static inline char rest_easy_perform(
 }
 
 /**
- * rest_sync_transfer - performs a blocking HTTP request,
- *                      and stores results in pvars
- * @method:    HTTP verb to be used
- * @msg:       SIP message struct
- * @url:       HTTP(S) URL to be queried
- * @body:      Body of the request
- * @ctype:     Value for the "Content-Type: " header of the request
- * @body_pv:   pseudo var which will hold the result body
- * @ctype_pv:  pvar which will hold the result content type
- * @code_pv:   pvar to hold the HTTP return code
+ * rcl_append_hdr_block - queue a block of extra request headers
+ * @hdrs: CRLF- or LF-separated header lines ("Name: value"), may be NULL
+ *
+ * Appends onto the same pending list used by rest_append_hf(), so the headers
+ * are picked up by the next transfer and cleared along with it.
  */
-int rest_sync_transfer(enum rest_client_method method, struct sip_msg *msg,
-          /* in */    char *url, str *body, str *ctype,
-          /* out */   pv_spec_p body_pv, pv_spec_p ctype_pv, pv_spec_p code_pv)
+static int rcl_append_hdr_block(const str *hdrs)
+{
+	char buf[MAX_HEADER_FIELD_LEN];
+	char *p, *end, *nl;
+	int len;
+
+	if (!hdrs || !hdrs->s || hdrs->len <= 0)
+		return 0;
+
+	p = hdrs->s;
+	end = p + hdrs->len;
+
+	while (p < end) {
+		nl = q_memchr(p, '\n', end - p);
+		len = (nl ? nl : end) - p;
+		if (len > 0 && p[len - 1] == '\r')
+			len--;
+
+		if (len > 0) {
+			if (len + 1 > MAX_HEADER_FIELD_LEN) {
+				LM_ERR("header field too long (%d bytes)\n", len);
+				return -1;
+			}
+
+			memcpy(buf, p, len);
+			buf[len] = '\0';
+			header_list = curl_slist_append(header_list, buf);
+		}
+
+		if (!nl)
+			break;
+		p = nl + 1;
+	}
+
+	return 0;
+}
+
+/**
+ * rcl_trim_tail - drop trailing whitespace by shrinking the length only
+ *
+ * Unlike trim(), this leaves @s->s pointing at the start of the allocation, so
+ * the buffer stays valid to pkg_free().  Used by the raw API, which hands
+ * buffer ownership to the caller.
+ */
+static inline void rcl_trim_tail(str *s)
+{
+	while (s->len > 0 && (s->s[s->len - 1] == '\r' || s->s[s->len - 1] == '\n'
+	           || s->s[s->len - 1] == ' ' || s->s[s->len - 1] == '\t'))
+		s->len--;
+}
+
+/**
+ * _rest_sync_transfer - performs a blocking HTTP request
+ * @method:     HTTP verb to be used
+ * @msg:        SIP message struct
+ * @url:        HTTP(S) URL to be queried
+ * @body:       Body of the request
+ * @ctype:      Value for the "Content-Type: " header of the request
+ * @res_body:   out, reply body; caller owns the buffer on RCL_OK
+ * @res_ctype:  out, reply content type; caller owns the buffer on RCL_OK
+ * @http_rc:    out, HTTP status code (0 if unavailable)
+ *
+ * Both output buffers are pkg-allocated and are always returned, even on
+ * failure, so the caller must free whatever came back non-NULL.
+ */
+static int _rest_sync_transfer(enum rest_client_method method,
+          struct sip_msg *msg, char *url, str *body, str *ctype,
+          str *res_body, str *res_ctype, long *http_rc)
 {
 	int ret;
 	CURLcode rc;
-	long http_rc;
-	pv_value_t pv_val;
 	rest_trace_param_t tparam;
-	str st = STR_NULL, res_body = STR_NULL, tbody, ttype;
+
+	*res_body = (str)STR_NULL;
+	*res_ctype = (str)STR_NULL;
+	*http_rc = 0;
 
 	curl_easy_reset(sync_handle);
 	if (init_transfer(sync_handle, url, 0) != 0) {
@@ -727,59 +788,17 @@ int rest_sync_transfer(enum rest_client_method method, struct sip_msg *msg,
 	}
 
 	w_curl_easy_setopt(sync_handle, CURLOPT_WRITEFUNCTION, write_func);
-	w_curl_easy_setopt(sync_handle, CURLOPT_WRITEDATA, &res_body);
+	w_curl_easy_setopt(sync_handle, CURLOPT_WRITEDATA, res_body);
 
 	w_curl_easy_setopt(sync_handle, CURLOPT_HEADERFUNCTION, header_func);
 	/* coverity[bad_sizeof] */
-	w_curl_easy_setopt(sync_handle, CURLOPT_HEADERDATA, &st);
+	w_curl_easy_setopt(sync_handle, CURLOPT_HEADERDATA, res_ctype);
 
 	if (rest_trace_enabled())
 		init_rest_trace(sync_handle, msg, &tparam);
 
-	ret = rest_easy_perform(sync_handle, url, &http_rc);
+	ret = rest_easy_perform(sync_handle, url, http_rc);
 	clean_header_list;
-
-	if (code_pv) {
-		pv_val.flags = PV_VAL_INT|PV_TYPE_INT;
-		pv_val.ri = (int)http_rc;
-
-		if (pv_set_value(msg, code_pv, 0, &pv_val) != 0) {
-			LM_ERR("Set code pv value failed!\n");
-			return RCL_INTERNAL_ERR;
-		}
-	}
-
-	if (ret < 0 && ret != RCL_TRANSFER_TIMEOUT)
-		return ret;
-
-	tbody = res_body;
-	trim(&tbody);
-
-	pv_val.flags = PV_VAL_STR;
-	pv_val.rs = tbody;
-
-	if (pv_set_value(msg, body_pv, 0, &pv_val) != 0) {
-		LM_ERR("Set body pv value failed!\n");
-		return RCL_INTERNAL_ERR;
-	}
-
-	if (res_body.s)
-		pkg_free(res_body.s);
-
-	if (ctype_pv) {
-		ttype = st;
-		trim(&ttype);
-
-		pv_val.rs = ttype;
-
-		if (pv_set_value(msg, ctype_pv, 0, &pv_val) != 0) {
-			LM_ERR("Set content type pv value failed!\n");
-			return RCL_INTERNAL_ERR;
-		}
-	}
-
-	if (st.s)
-		pkg_free(st.s);
 
 	return ret;
 
@@ -791,6 +810,145 @@ cleanup:
 	}
 
 	return RCL_INTERNAL_ERR;
+}
+
+/**
+ * rest_sync_transfer - performs a blocking HTTP request,
+ *                      and stores results in pvars
+ * @method:    HTTP verb to be used
+ * @msg:       SIP message struct
+ * @url:       HTTP(S) URL to be queried
+ * @body:      Body of the request
+ * @ctype:     Value for the "Content-Type: " header of the request
+ * @body_pv:   pseudo var which will hold the result body
+ * @ctype_pv:  pvar which will hold the result content type
+ * @code_pv:   pvar to hold the HTTP return code
+ */
+int rest_sync_transfer(enum rest_client_method method, struct sip_msg *msg,
+          /* in */    char *url, str *body, str *ctype,
+          /* out */   pv_spec_p body_pv, pv_spec_p ctype_pv, pv_spec_p code_pv)
+{
+	int ret;
+	long http_rc;
+	pv_value_t pv_val;
+	str st, res_body, tbody, ttype;
+
+	ret = _rest_sync_transfer(method, msg, url, body, ctype,
+	                          &res_body, &st, &http_rc);
+	if (ret == RCL_INTERNAL_ERR)
+		return ret;
+
+	if (code_pv) {
+		pv_val.flags = PV_VAL_INT|PV_TYPE_INT;
+		pv_val.ri = (int)http_rc;
+
+		if (pv_set_value(msg, code_pv, 0, &pv_val) != 0) {
+			LM_ERR("Set code pv value failed!\n");
+			ret = RCL_INTERNAL_ERR;
+			goto out;
+		}
+	}
+
+	if (ret < 0 && ret != RCL_TRANSFER_TIMEOUT)
+		goto out;
+
+	tbody = res_body;
+	trim(&tbody);
+
+	pv_val.flags = PV_VAL_STR;
+	pv_val.rs = tbody;
+
+	if (pv_set_value(msg, body_pv, 0, &pv_val) != 0) {
+		LM_ERR("Set body pv value failed!\n");
+		ret = RCL_INTERNAL_ERR;
+		goto out;
+	}
+
+	if (ctype_pv) {
+		ttype = st;
+		trim(&ttype);
+
+		pv_val.rs = ttype;
+
+		if (pv_set_value(msg, ctype_pv, 0, &pv_val) != 0) {
+			LM_ERR("Set content type pv value failed!\n");
+			ret = RCL_INTERNAL_ERR;
+			goto out;
+		}
+	}
+
+out:
+	if (res_body.s)
+		pkg_free(res_body.s);
+	if (st.s)
+		pkg_free(st.s);
+
+	return ret;
+}
+
+/**
+ * rcl_sync_transfer_raw - blocking HTTP request for the module API
+ *
+ * Same as rest_sync_transfer(), but results are returned as str/int rather
+ * than written into pvars, and @hdrs allows extra request headers to be given
+ * explicitly instead of through the rest_append_hf() side channel.
+ *
+ * On return, the caller owns out_body->s and out_ctype->s (pkg memory) and
+ * must free whatever is non-NULL, regardless of the return code.
+ */
+int rcl_sync_transfer_raw(enum rest_client_method method, struct sip_msg *msg,
+          const str *url, const str *body, const str *ctype, const str *hdrs,
+          str *out_body, str *out_ctype, int *out_code)
+{
+	int ret;
+	long http_rc;
+	str url_nt, res_body, res_ctype;
+
+	if (out_body)
+		*out_body = (str)STR_NULL;
+	if (out_ctype)
+		*out_ctype = (str)STR_NULL;
+	if (out_code)
+		*out_code = 0;
+
+	if (!url || !url->s || url->len <= 0) {
+		LM_ERR("no URL given\n");
+		return RCL_INTERNAL_ERR;
+	}
+
+	if (pkg_nt_str_dup(&url_nt, (str *)url) < 0) {
+		LM_ERR("oom\n");
+		return RCL_INTERNAL_ERR;
+	}
+
+	if (rcl_append_hdr_block(hdrs) != 0) {
+		clean_header_list;
+		pkg_free(url_nt.s);
+		return RCL_INTERNAL_ERR;
+	}
+
+	ret = _rest_sync_transfer(method, msg, url_nt.s, (str *)body, (str *)ctype,
+	                          &res_body, &res_ctype, &http_rc);
+	pkg_free(url_nt.s);
+
+	if (out_code)
+		*out_code = (int)http_rc;
+
+	if (out_body) {
+		rcl_trim_tail(&res_body);
+		*out_body = res_body;
+	} else if (res_body.s) {
+		pkg_free(res_body.s);
+	}
+
+	if (out_ctype) {
+		rcl_trim_tail(&res_ctype);
+		*out_ctype = res_ctype;
+	} else if (res_ctype.s) {
+		pkg_free(res_ctype.s);
+	}
+
+	return ret;
 }
 
 /**
@@ -1083,7 +1241,7 @@ static enum async_ret_code _resume_async_http_req(int fd, struct sip_msg *msg,
 				break;
 
 			async_status = ASYNC_CONTINUE;
-			return 1;
+			return param->raw ? RCL_CONTINUE : 1;
 		/* this rc has been removed since cURL 7.20.0 (Feb 2010), but it's not
 		 * yet marked as deprecated, so let's keep the do/while loop */
 		} else if (mrc != CURLM_CALL_MULTI_PERFORM) {
@@ -1103,7 +1261,7 @@ static enum async_ret_code _resume_async_http_req(int fd, struct sip_msg *msg,
 		if (running == 1) {
 			LM_DBG("transfer in progress...\n");
 			async_status = ASYNC_CONTINUE;
-			return 1;
+			return param->raw ? RCL_CONTINUE : 1;
 		}
 
 		if (running != 0) {
@@ -1128,7 +1286,7 @@ static enum async_ret_code _resume_async_http_req(int fd, struct sip_msg *msg,
 	} else if (!timed_out && FD_ISSET(fd, &rset)) {
 		LM_DBG("fd %d still transferring...\n", fd);
 		async_status = ASYNC_CONTINUE;
-		return 1;
+		return param->raw ? RCL_CONTINUE : 1;
 	}
 
 cleanup:
@@ -1149,7 +1307,10 @@ cleanup:
 		LM_DBG("download finished, but an HTTP status is not available "
 		        "(timed_out: %d)\n", timed_out);
 
-	if (param->code_pv) {
+	if (param->raw) {
+		if (param->out_code)
+			*param->out_code = (int)http_rc;
+	} else if (param->code_pv) {
 		val.flags = PV_VAL_INT|PV_TYPE_INT;
 		val.ri = (int)http_rc;
 		if (pv_set_value(msg, param->code_pv, 0, &val) != 0) {
@@ -1179,18 +1340,33 @@ cleanup:
 		goto out;
 	}
 
-	val.flags = PV_VAL_STR;
-	val.rs = param->body;
-	if (pv_set_value(msg, param->body_pv, 0, &val) != 0) {
-		LM_ERR("failed to set output body pv\n");
-		goto out;
-	}
+	if (param->raw) {
+		/* hand the buffers over to the caller and stop tracking them here */
+		if (param->out_body) {
+			rcl_trim_tail(&param->body);
+			*param->out_body = param->body;
+			param->body = (str)STR_NULL;
+		}
 
-	if (param->ctype_pv) {
-		val.rs = param->ctype;
-		if (pv_set_value(msg, param->ctype_pv, 0, &val) != 0) {
-			LM_ERR("failed to set output ctype pv\n");
+		if (param->out_ctype) {
+			rcl_trim_tail(&param->ctype);
+			*param->out_ctype = param->ctype;
+			param->ctype = (str)STR_NULL;
+		}
+	} else {
+		val.flags = PV_VAL_STR;
+		val.rs = param->body;
+		if (pv_set_value(msg, param->body_pv, 0, &val) != 0) {
+			LM_ERR("failed to set output body pv\n");
 			goto out;
+		}
+
+		if (param->ctype_pv) {
+			val.rs = param->ctype;
+			if (pv_set_value(msg, param->ctype_pv, 0, &val) != 0) {
+				LM_ERR("failed to set output ctype pv\n");
+				goto out;
+			}
 		}
 	}
 
@@ -1204,8 +1380,9 @@ out:
 	}
 	put_multi(param->multi_list);
 
-	pkg_free(param->body.s);
-	if (param->ctype_pv && param->ctype.s)
+	if (param->body.s)
+		pkg_free(param->body.s);
+	if (param->ctype.s && (param->raw || param->ctype_pv))
 		pkg_free(param->ctype.s);
 	curl_easy_cleanup(param->handle);
 	if ( param->tparam ) {
@@ -1230,6 +1407,159 @@ enum async_ret_code resume_async_http_req(int fd, struct sip_msg *msg, void *_pa
 enum async_ret_code time_out_async_http_req(int fd, struct sip_msg *msg, void *_param)
 {
 	return _resume_async_http_req(fd, msg, (rest_async_param *)_param, 1);
+}
+
+
+/**
+ * rcl_start_async_raw - launch an async HTTP request on behalf of a module
+ *
+ * See api.h for the full contract.  In short, *out_fd distinguishes the three
+ * possible outcomes: ASYNC_NO_IO (failed, nothing to resume), ASYNC_SYNC
+ * (already complete, outputs are filled) or a pollable fd (resume needed).
+ */
+int rcl_start_async_raw(struct sip_msg *msg, enum rest_client_method method,
+          const str *url, const str *body, const str *ctype, const str *hdrs,
+          unsigned int timeout_s, void **handle,
+          str *out_body, str *out_ctype, int *out_code,
+          enum async_ret_code *out_fd)
+{
+	rest_async_param *param;
+	str url_nt;
+	long http_rc;
+	int read_fd, rc;
+
+	if (out_body)
+		*out_body = (str)STR_NULL;
+	if (out_ctype)
+		*out_ctype = (str)STR_NULL;
+	if (out_code)
+		*out_code = 0;
+	*handle = NULL;
+	*out_fd = ASYNC_NO_IO;
+
+	if (!url || !url->s || url->len <= 0) {
+		LM_ERR("no URL given\n");
+		return RCL_INTERNAL_ERR;
+	}
+
+	param = pkg_malloc(sizeof *param);
+	if (!param) {
+		LM_ERR("oom\n");
+		return RCL_INTERNAL_ERR;
+	}
+	memset(param, '\0', sizeof *param);
+
+	param->raw = 1;
+	param->method = method;
+	param->out_body = out_body;
+	param->out_ctype = out_ctype;
+	param->out_code = out_code;
+	param->timeout_s = (timeout_s && timeout_s < curl_timeout) ?
+			timeout_s : curl_timeout;
+
+	if (pkg_nt_str_dup(&url_nt, (str *)url) < 0) {
+		LM_ERR("oom\n");
+		pkg_free(param);
+		return RCL_INTERNAL_ERR;
+	}
+
+	if (rcl_append_hdr_block(hdrs) != 0) {
+		clean_header_list;
+		pkg_free(url_nt.s);
+		pkg_free(param);
+		return RCL_INTERNAL_ERR;
+	}
+
+	/* always collect the reply content type, so that a later resume() can
+	 * hand it over regardless of what was requested at start time */
+	rc = start_async_http_req(msg, method, url_nt.s, (str *)body, (str *)ctype,
+			param, &param->body, &param->ctype, &read_fd);
+	pkg_free(url_nt.s);
+
+	/* error occurred; no transfer done */
+	if (read_fd == ASYNC_NO_IO) {
+		pkg_free(param);
+		return rc;
+	}
+
+	/* no need for async - transfer already completed */
+	if (read_fd == ASYNC_SYNC) {
+		if (curl_easy_getinfo(param->handle, CURLINFO_RESPONSE_CODE,
+		        &http_rc) != CURLE_OK)
+			http_rc = 0;
+		LM_DBG("HTTP response code: %ld\n", http_rc);
+
+		if (out_code)
+			*out_code = (int)http_rc;
+
+		if (out_body) {
+			rcl_trim_tail(&param->body);
+			*out_body = param->body;
+		} else if (param->body.s) {
+			pkg_free(param->body.s);
+		}
+
+		if (out_ctype) {
+			rcl_trim_tail(&param->ctype);
+			*out_ctype = param->ctype;
+		} else if (param->ctype.s) {
+			pkg_free(param->ctype.s);
+		}
+
+		curl_easy_cleanup(param->handle);
+		pkg_free(param);
+
+		*out_fd = ASYNC_SYNC;
+		return rc;
+	}
+
+	/* The TCP connection is established, async started with success.  Drop
+	 * the caller's output pointers: they were only valid for the
+	 * ASYNC_SYNC case above and would be dangling by resume/timeout time.
+	 * Fresh ones are supplied to rcl_resume_async_raw(). */
+	param->out_body = NULL;
+	param->out_ctype = NULL;
+	param->out_code = NULL;
+
+	*handle = param;
+	*out_fd = read_fd;
+	return rc;
+}
+
+
+enum async_ret_code rcl_resume_async_raw(int fd, struct sip_msg *msg,
+          void *handle, str *out_body, str *out_ctype, int *out_code)
+{
+	rest_async_param *param = (rest_async_param *)handle;
+
+	if (out_body)
+		*out_body = (str)STR_NULL;
+	if (out_ctype)
+		*out_ctype = (str)STR_NULL;
+	if (out_code)
+		*out_code = 0;
+
+	/* results of this particular resume go to the caller's storage; any
+	 * output the caller is not interested in is freed internally */
+	param->out_body = out_body;
+	param->out_ctype = out_ctype;
+	param->out_code = out_code;
+
+	return _resume_async_http_req(fd, msg, param, 0);
+}
+
+
+enum async_ret_code rcl_timeout_async_raw(int fd, struct sip_msg *msg,
+          void *handle)
+{
+	rest_async_param *param = (rest_async_param *)handle;
+
+	/* nothing useful to hand back on a timeout; let the buffers be freed */
+	param->out_body = NULL;
+	param->out_ctype = NULL;
+	param->out_code = NULL;
+
+	return _resume_async_http_req(fd, msg, param, 1);
 }
 
 
