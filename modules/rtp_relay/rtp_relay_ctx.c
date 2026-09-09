@@ -353,11 +353,33 @@ static void rtp_relay_b2b_end(void *param)
 	rtp_relay_ctx_release(ctx);
 }
 
+/* The saved offer bodies only exist to feed an auth retry of the same offer.
+ * Once the offer transaction is over they have to go: offer and answer
+ * prefer the saved body over the one in the message, so a leftover entry
+ * would send the previous offer again - a resume after hold would go out
+ * with the hold SDP and the call would never come back. */
+static void rtp_relay_sess_clear_saved_bodies(struct rtp_relay_sess *sess)
+{
+	int ltype;
+
+	if (!sess)
+		return;
+
+	for (ltype = RTP_RELAY_CALLER; ltype <= RTP_RELAY_CALLEE; ltype++) {
+		if (!sess->legs[ltype] ||
+				!sess->legs[ltype]->flags[RTP_RELAY_FLAGS_BODY].s)
+			continue;
+		shm_free(sess->legs[ltype]->flags[RTP_RELAY_FLAGS_BODY].s);
+		memset(&sess->legs[ltype]->flags[RTP_RELAY_FLAGS_BODY], 0, sizeof(str));
+	}
+}
+
 static int rtp_relay_sess_b2b_success(struct rtp_relay_ctx *ctx,
 	struct rtp_relay_sess *sess)
 {
 	rtp_sess_set_success(sess);
 	ctx->established = sess;
+	rtp_relay_sess_clear_saved_bodies(sess);
 	if (!rtp_relay_ctx_established(ctx)) {
 		lock_start_write(rtp_relay_contexts_lock);
 		list_add(&ctx->list, rtp_relay_contexts);
@@ -639,6 +661,11 @@ static void rtp_relay_b2b_tm_reply(struct cell* t, int type, struct tmcb_params 
 		rtp_sess_reset_pending(rpl->sess);
 		return;
 	}
+
+	/* any other final reply ends the offer transaction, so the body we kept
+	 * for a possible retry has done its job */
+	if (p->code >= 200)
+		rtp_relay_sess_clear_saved_bodies(rpl->sess);
 
 	handle_rtp_relay_ctx_leg_reply(rpl->ctx, p->rpl, NULL, rpl->sess, rpl->type);
 }
