@@ -2523,13 +2523,20 @@ after_unlock5:
 				LM_DBG("dlg_leg_get_cseq(dlg, [%d], req)\n", src_leg);
 				update_val = dlg_leg_get_cseq(dlg, src_leg, req);
 				if (update_val == 0) {
-					if (dlg->legs[dst_leg].last_gen_cseq) {
+					/* No mapping for this ACK, so the INVITE it acknowledges
+					 * went out with its CSeq untouched, and RFC 3261 §13.2.2.4
+					 * wants the ACK to repeat it. last_gen_cseq belongs to a
+					 * different transaction - a ping, or an in-dialog request
+					 * we generated between the INVITE and the ACK, such as the
+					 * UPDATE of a precondition handshake - and sending that
+					 * number makes the UAS drop the ACK. */
+					if (str2int(&dlg->legs[src_leg].inv_cseq, &update_val) == 0) {
+						LM_DBG("using INVITE cseq [%d] for ACK on leg [%d]\n",
+							update_val, src_leg);
+					} else if (dlg->legs[dst_leg].last_gen_cseq) {
 						LM_DBG("using last generated cseq [%d] for ACK on leg [%d]\n",
 							dlg->legs[dst_leg].last_gen_cseq, dst_leg);
 						update_val = dlg->legs[dst_leg].last_gen_cseq;
-					} else if (str2int(&dlg->legs[src_leg].inv_cseq, &update_val) == 0) {
-						LM_DBG("using INVITE cseq [%d] for ACK on leg [%d]\n",
-							update_val, src_leg);
 					} else {
 						update_val = 0;
 					}
