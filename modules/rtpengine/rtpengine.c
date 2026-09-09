@@ -2536,13 +2536,25 @@ static int parse_flags(struct ng_flags_parse *ng_flags, struct sip_msg *msg,
 
 	if (iniface.len != 0 && outiface.len != 0) {
 		if (ng_flags->direction) {
-			bitem = bencode_str(bencode_item_buffer(ng_flags->direction), &iniface);
+			/* the first element of "direction" is the interface the message
+			 * we are relaying came in on and the second the one it goes out
+			 * on. An answer travels the other way round, so the same
+			 * in-iface/out-iface pair has to be emitted reversed - otherwise
+			 * the leg that made the offer gets re-anchored onto the far-side
+			 * interface and handed its advertised address */
+			str *first = &iniface, *second = &outiface;
+
+			if (op && *op == OP_ANSWER) {
+				first = &outiface;
+				second = &iniface;
+			}
+			bitem = bencode_str(bencode_item_buffer(ng_flags->direction), first);
 			if (!bitem) {
-				err = iniface.s;
+				err = first->s;
 				goto error;
 			}
 			BCHECK(bencode_list_add(ng_flags->direction, bitem));
-			bitem = bencode_str(bencode_item_buffer(ng_flags->direction), &outiface);
+			bitem = bencode_str(bencode_item_buffer(ng_flags->direction), second);
 			if (!bitem) {
 				err = "no more memory for direction";
 				goto error;
