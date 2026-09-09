@@ -65,6 +65,10 @@ str r_registered = str_init("registered");
 str r_refreshed = str_init("refreshed");
 str r_expired = str_init("expired");
 str r_unregistered = str_init("unregistered");
+
+/* contact parameters that reg-info already models as contact attributes */
+static str param_q = str_init("q");
+static str param_expires = str_init("expires");
 #define VERSION_HOLDER "00000000000"
 
 str reginfo_key_etag = str_init("reginfo_etag");
@@ -76,6 +80,8 @@ str *build_reginfo_full(urecord_t *record, ucontact_t *contact, str aor[], unsig
 	xmlNodePtr registration_node = NULL;
 	xmlNodePtr contact_node = NULL;
 	xmlNodePtr uri_node = NULL;
+	xmlNodePtr param_node = NULL;
+	param_t *param;
 	str *body = NULL;
 	str state = STR_NULL;
 	str event = STR_NULL;
@@ -240,6 +246,32 @@ str *build_reginfo_full(urecord_t *record, ucontact_t *contact, str aor[], unsig
 				LM_ERR("while adding child\n");
 				goto error;
 			}
+
+			/* Contact header field parameters, RFC 3680 section 5.4.  "q"
+			 * and "expires" are already carried as contact attributes */
+			for(param = ptr->params; param; param = param->next) {
+				if(!param->name.len)
+					continue;
+				if(str_match(&param->name, &param_q)
+						|| str_match(&param->name, &param_expires))
+					continue;
+
+				memset(buf, 0, sizeof(buf));
+				snprintf(buf, sizeof(buf), "%.*s", param->body.len,
+						param->body.s);
+				param_node = xmlNewChild(contact_node, NULL,
+						BAD_CAST "unknown-param", BAD_CAST buf);
+				if(param_node == NULL) {
+					LM_ERR("while adding child\n");
+					goto error;
+				}
+
+				memset(buf, 0, sizeof(buf));
+				snprintf(buf, sizeof(buf), "%.*s", param->name.len,
+						param->name.s);
+				xmlNewProp(param_node, BAD_CAST "name", BAD_CAST buf);
+			}
+
 			ptr = ptr->next;
 		}
 

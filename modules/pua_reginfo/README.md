@@ -42,6 +42,13 @@ unregistered.
 - ...
 
 
+Any Contact URI parameter that *usrloc* has stored - see its
+[params_column](../usrloc/README.md#params_column-string) parameter - is
+published along with the contact, as an *unknown-param* element per
+RFC 3680. Parameters that reginfo already carries as attributes of the
+*contact* element, *q* and *expires*, are not repeated.
+
+
 ### Dependencies
 
 
