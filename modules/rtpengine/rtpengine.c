@@ -5065,6 +5065,7 @@ static int rtpengine_api_offer(struct rtp_relay_session *sess,
 		str *global_flags, str *flags, str *extra_flags)
 {
 	struct rtpe_set* rset;
+	struct sip_msg *msg;
 	str *newflags, *node;
 	pv_value_t val;
 	int ret;
@@ -5089,16 +5090,23 @@ static int rtpengine_api_offer(struct rtp_relay_session *sess,
 			global_flags, flags, extra_flags);
 	if (!newflags)
 		return -1;
-	ret = rtpengine_offer_answer_body(sess->msg, newflags, node,
+	/* an offer driven from a reply - late negotiation on a B2B bridge, where
+	 * the outgoing INVITE had no SDP - has no message to work on. media_pvar
+	 * is a script variable and needs some message as its carrier, so borrow
+	 * a dummy one, the same way rtpengine_api_delete() does */
+	msg = (sess->msg ? sess->msg : get_dummy_sip_msg());
+	ret = rtpengine_offer_answer_body(msg, newflags, node,
 			&media_pvar, sess->body, body, rset, OP_OFFER);
 	pkg_free(newflags->s);
 	if (ret >= 0) {
-		if (pv_get_spec_value(sess->msg, &media_pvar, &val) >= 0)
+		if (pv_get_spec_value(msg, &media_pvar, &val) >= 0)
 			fill_rtpengine_node(server, &val.rs);
 		else
 			LM_ERR("could not retrieve the value of the used rtpengine!\n");
-		pv_set_value(sess->msg, &media_pvar, EQ_T, NULL);
+		pv_set_value(msg, &media_pvar, EQ_T, NULL);
 	}
+	if (is_dummy_sip_msg(msg) == 0)
+		release_dummy_sip_msg(msg);
 	return ret;
 }
 
