@@ -338,7 +338,11 @@ a socket that the "freeswitch_scripting" module is subscribed to.
 Parameters:
 
 
-- *name* - the name of the event
+- *name* - the name of the event. FreeSWITCH reports every custom
+event with an *Event-Name* of "CUSTOM" and its real name in
+*Event-Subclass*, so custom events are raised under the combined
+"CUSTOM &lt;subclass&gt;" form - the same string used to subscribe to
+them, e.g. "CUSTOM conference::maintenance"
 - *sender* - the FreeSWITCH sender IP address
 - *body* - the full JSON-encoded body of the event,
 as sent by FreeSWITCH. Use the json module ($json variable)
