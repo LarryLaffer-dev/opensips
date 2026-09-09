@@ -529,6 +529,31 @@ modparam("usrloc", "attr_column", "attributes")
 ```
 
 
+#### params_column (string)
+
+
+Name of column containing the URI parameters of the registered Contact
+header, stored as a `name=value;name2=value2` list.
+
+The column is used to preserve parameters that a UA attached to its
+Contact URI -- for example `+sip.instance`, `+g.3gpp.icsi-ref` or
+`video` -- across a restart, so that they can be replayed to modules
+that need them (such as `pua_reginfo`, which renders them as
+`<unknown-param>` elements in reg-event bodies).
+
+Requires table version 1014 or later.
+
+
+*Default value is "params".*
+
+
+```opensips title="Set params_column parameter"
+...
+modparam("usrloc", "params_column", "contact_params")
+...
+```
+
+
 #### use_domain (boolean)
 
 

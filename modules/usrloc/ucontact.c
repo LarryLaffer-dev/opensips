@@ -42,6 +42,7 @@
 #include "../../dprint.h"
 #include "../../db/db.h"
 #include "../../db/db_insertq.h"
+#include "../../lib/str_buffer.h"
 
 #include "ul_mod.h"
 #include "ul_callback.h"
@@ -55,6 +56,67 @@
 #include "utime.h"
 #include "usrloc.h"
 #include "kv_store.h"
+
+/**
+ * @brief Serialise a Contact URI parameter list into "name=value;flag;..." form.
+ *
+ * Parameters without a body are emitted as bare flags. Unnamed parameters are
+ * skipped. An empty or absent list yields an empty @dst rather than an error.
+ *
+ * @dst receives a pkg-allocated, NUL-terminated buffer owned by the caller;
+ * it is left as STR_NULL when there is nothing to serialise.
+ *
+ * @return 0 on success, -1 if the string could not be built
+ */
+int ucontact_pack_params(const param_t *params, str *dst)
+{
+	static str param_fmt = str_init("%.*s%s%.*s");
+	const param_t *param;
+	str_buffer *buffer;
+	int first = 1;
+
+	memset(dst, 0, sizeof *dst);
+
+	buffer = new_str_buffer();
+	if (!buffer) {
+		LM_ERR("oom\n");
+		return -1;
+	}
+
+	for (param = params; param; param = param->next) {
+		if (param->name.len <= 0)
+			continue;
+
+		if (!first)
+			str_buffer_append_char_ptr(buffer, ";", 1);
+		first = 0;
+
+		if (param->body.len > 0)
+			str_buffer_append_str_fmt(buffer, &param_fmt,
+				param->name.len, param->name.s, "=",
+				param->body.len, param->body.s);
+		else
+			str_buffer_append_str_fmt(buffer, &param_fmt,
+				param->name.len, param->name.s, "", 0, NULL);
+	}
+
+	if (str_buffer_has_error(buffer)) {
+		LM_ERR("failed to build the Contact parameter string\n");
+		goto error;
+	}
+
+	if (!str_buffer_to_str(buffer, dst)) {
+		LM_ERR("failed to export the Contact parameter string\n");
+		goto error;
+	}
+
+	free_str_buffer(buffer);
+	return 0;
+
+error:
+	free_str_buffer(buffer);
+	return -1;
+}
 
 /*
  * Determines the IP address of the next hop on the way to given contact based
@@ -103,6 +165,7 @@ new_ucontact(str* _dom, str* _aor, str* _contact, ucontact_info_t* _ci)
 	struct sip_uri ct_uri;
 	ucontact_t *c;
 	int_str_t shtag, *shtagp;
+	param_t *prev = NULL, *curr, *param;
 
 	c = (ucontact_t*)shm_malloc(sizeof(ucontact_t));
 	if (!c) {
@@ -148,6 +211,31 @@ new_ucontact(str* _dom, str* _aor, str* _contact, ucontact_info_t* _ci)
 	if (_ci->attr && _ci->attr->len) {
 		if (shm_str_dup( &c->attr, _ci->attr) < 0) goto mem_error;
 	}
+
+	/* copy the Contact URI parameter list into shm */
+	for (param = _ci->params; param; param = param->next) {
+		curr = shm_malloc(sizeof *curr);
+		if (!curr) goto mem_error;
+		memset(curr, 0, sizeof *curr);
+		curr->len = param->len;
+		curr->type = param->type;
+
+		/* link it in before duplicating the strings, so a failure part-way
+		 * through is still cleaned up along with the rest of the contact */
+		if (prev)
+			prev->next = curr;
+		else
+			c->params = curr;
+		prev = curr;
+
+		if (param->body.len > 0 && param->body.s) {
+			if (shm_str_dup(&curr->body, &param->body) < 0) goto mem_error;
+		}
+		if (param->name.len > 0 && param->name.s) {
+			if (shm_str_dup(&curr->name, &param->name) < 0) goto mem_error;
+		}
+	}
+
 
 	if (_ci->cdb_key.s && _ci->cdb_key.len) {
 		if (shm_str_dup( &c->cdb_key, &_ci->cdb_key) < 0) goto mem_error;
@@ -211,6 +299,16 @@ out_free:
 	if (c->cdb_key.s) shm_free(c->cdb_key.s);
 	if (c->shtag.s) shm_free(c->shtag.s);
 	if (c->kv_storage) store_destroy(c->kv_storage);
+	if (c->params) {
+		param = c->params;
+		while(param) {
+			curr = param;
+			param = param->next;
+			if (curr->name.s) shm_free(curr->name.s);
+			if (curr->body.s) shm_free(curr->body.s);
+			shm_free(curr);
+		}
+	}
 	shm_free(c);
 	return NULL;
 }
@@ -222,6 +320,8 @@ out_free:
  */
 void free_ucontact(ucontact_t* _c)
 {
+	param_t *curr, *param;
+
 	if (!_c) return;
 
 	if (_c->flags & FL_EXTRA_HOP)
@@ -237,6 +337,16 @@ void free_ucontact(ucontact_t* _c)
 	if (_c->cdb_key.s) shm_free(_c->cdb_key.s);
 	if (_c->shtag.s) shm_free(_c->shtag.s);
 	if (_c->kv_storage) store_destroy(_c->kv_storage);
+	if (_c->params) {
+		param = _c->params;
+		while(param) {
+			curr = param;
+			param = param->next;
+			if (curr->name.s) shm_free(curr->name.s);
+			if (curr->body.s) shm_free(curr->body.s);
+			shm_free(curr);
+		}
+	}
 
 skip_fields:
 	shm_free( _c );
@@ -520,6 +630,7 @@ int db_insert_ucontact(ucontact_t* _c,query_list_t **ins_list, int update)
 {
 	int nr_vals = UL_COLS - 1;
 	int start = 0;
+	str params = STR_NULL;
 
 	static db_ps_t myI_ps = NULL;
 	static db_ps_t myR_ps = NULL;
@@ -555,6 +666,7 @@ int db_insert_ucontact(ucontact_t* _c,query_list_t **ins_list, int update)
 	keys[15] = &sip_instance_col;
 	keys[16] = &kv_store_col;
 	keys[17] = &attr_col;
+	keys[18] = &params_col;
 	keys[UL_COLS - 1] = &domain_col; /* "domain" always stays last */
 
 	memset(vals, 0, sizeof vals);
@@ -653,6 +765,15 @@ int db_insert_ucontact(ucontact_t* _c,query_list_t **ins_list, int update)
 		vals[17].val.str_val.len = _c->attr.len;
 	}
 
+	vals[18].type = DB_STR;
+	if (_c->params == 0) {
+		vals[18].nul = 1;
+	} else {
+		if (ucontact_pack_params(_c->params, &params) < 0)
+			return -1;
+		vals[18].val.str_val = params;
+	}
+
 	if (use_domain) {
 		vals[UL_COLS - 1].type = DB_STR;
 
@@ -698,9 +819,11 @@ int db_insert_ucontact(ucontact_t* _c,query_list_t **ins_list, int update)
 	}
 
 	store_free_buffer(&vals[16].val.str_val);
+	pkg_free(params.s);
 	return 0;
 out_err:
 	store_free_buffer(&vals[16].val.str_val);
+	pkg_free(params.s);
 	return -1;
 }
 

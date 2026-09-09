@@ -208,6 +208,7 @@ void bin_push_contact(bin_packet_t *packet, urecord_t *r, ucontact_t *c,
         const struct ct_match *match)
 {
 	str st;
+	str params = STR_NULL;
 
 	bin_push_str(packet, r->domain);
 	bin_push_str(packet, &r->aor);
@@ -246,6 +247,13 @@ void bin_push_contact(bin_packet_t *packet, urecord_t *r, ucontact_t *c,
 	st = store_serialize(c->kv_storage);
 	bin_push_str(packet, &st);
 	store_free_buffer(&st);
+
+	/* on failure, replicate an empty parameter list rather than dropping the
+	 * whole contact: the peer can still register it, only without params */
+	if (ucontact_pack_params(c->params, &params) < 0)
+		memset(&params, 0, sizeof params);
+	bin_push_str(packet, &params);
+	pkg_free(params.s);
 
 	bin_push_ctmatch(packet, match);
 }
@@ -470,7 +478,6 @@ static int receive_urecord_insert(bin_packet_t *packet)
 			r->kv_storage = kv_storage;
 		}
 	}
-
 out:
 	unlock_udomain(domain, &aor);
 
@@ -520,7 +527,7 @@ static int receive_ucontact_insert(bin_packet_t *packet)
 {
 	static ucontact_info_t ci;
 	static str d, aor, contact_str, callid,
-		user_agent, path, attr, st, sock, kv_str, cflags_str;
+		user_agent, path, attr, st, sock, kv_str, cflags_str, params_str;
 	udomain_t *domain;
 	urecord_t *record;
 	ucontact_t *contact;
@@ -529,6 +536,7 @@ static int receive_ucontact_insert(bin_packet_t *packet)
 	unsigned int rlabel;
 	struct ct_match cmatch = {CT_MATCH_NONE, NULL};
 	short pkg_ver = get_bin_pkg_version(packet);
+	param_hooks_t hooks;
 
 	memset(&ci, 0, sizeof ci);
 
@@ -594,8 +602,16 @@ static int receive_ucontact_insert(bin_packet_t *packet)
 	bin_pop_str(packet, &st);
 	memcpy(&ci.last_modified, st.s, sizeof ci.last_modified);
 
-	bin_pop_str(packet, &kv_str);
-	ci.packed_kv_storage = &kv_str;
+	if (pkg_ver >= UL_BIN_V5) {
+		bin_pop_str(packet, &kv_str);
+		ci.packed_kv_storage = &kv_str;
+	}
+	if (pkg_ver >= UL_BIN_V6) {
+		bin_pop_str(packet, &params_str);
+		if(parse_params(&params_str, CLASS_CONTACT, &hooks, &ci.params) < 0) {
+			LM_WARN("Error while parsing parameters: %.*s\n", params_str.len, params_str.s);
+		}
+	}
 
 	if (pkg_ver <= UL_BIN_V2)
 		cmatch = (struct ct_match){CT_MATCH_CONTACT_CALLID, NULL};
@@ -946,32 +962,32 @@ void receive_binary_packets(bin_packet_t *pkt)
 
 	switch (pkt->type) {
 	case REPL_URECORD_INSERT:
-		_ensure_bin_version2(pkt, UL_BIN_V2, UL_BIN_V5, "usrloc aor-ins packet");
+		_ensure_bin_version2(pkt, UL_BIN_V2, UL_BIN_V6, "usrloc aor-ins packet");
 		rc = receive_urecord_insert(pkt);
 		break;
 
 	case REPL_URECORD_DELETE:
-		_ensure_bin_version2(pkt, UL_BIN_V2, UL_BIN_V5, "usrloc aor-del packet");
+		_ensure_bin_version2(pkt, UL_BIN_V2, UL_BIN_V6, "usrloc aor-del packet");
 		rc = receive_urecord_delete(pkt);
 		break;
 
 	case REPL_UCONTACT_INSERT:
-		_ensure_bin_version2(pkt, UL_BIN_V2, UL_BIN_V5, "usrloc ct-ins packet");
+		_ensure_bin_version2(pkt, UL_BIN_V2, UL_BIN_V6, "usrloc ct-ins packet");
 		rc = receive_ucontact_insert(pkt);
 		break;
 
 	case REPL_UCONTACT_UPDATE:
-		_ensure_bin_version2(pkt, UL_BIN_V2, UL_BIN_V5, "usrloc ct-upd packet");
+		_ensure_bin_version2(pkt, UL_BIN_V2, UL_BIN_V6, "usrloc ct-upd packet");
 		rc = receive_ucontact_update(pkt);
 		break;
 
 	case REPL_UCONTACT_DELETE:
-		_ensure_bin_version2(pkt, UL_BIN_V2, UL_BIN_V5, "usrloc ct-del packet");
+		_ensure_bin_version2(pkt, UL_BIN_V2, UL_BIN_V6, "usrloc ct-del packet");
 		rc = receive_ucontact_delete(pkt);
 		break;
 
 	case SYNC_PACKET_TYPE:
-		_ensure_bin_version2(pkt, UL_BIN_V2, UL_BIN_V5, "usrloc sync packet");
+		_ensure_bin_version2(pkt, UL_BIN_V2, UL_BIN_V6, "usrloc sync packet");
 		rc = receive_sync_packet(pkt);
 		break;
 

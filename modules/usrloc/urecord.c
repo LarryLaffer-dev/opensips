@@ -497,6 +497,7 @@ int cdb_add_ct_update(cdb_dict_t *updates, const ucontact_t *ct, char remove)
 	cdb_dict_t *ct_fields;
 	cdb_key_t contacts_key;
 	str printed_flags;
+	str params = STR_NULL;
 
 	cdb_key_init(&contacts_key, "contacts");
 
@@ -583,8 +584,19 @@ int cdb_add_ct_update(cdb_dict_t *updates, const ucontact_t *ct, char remove)
 			return -1;
 	}
 
+	if (ct->params == 0) {
+		if (CDB_DICT_ADD_NULL(ct_fields, "params") != 0)
+			return -1;
+	} else {
+		if (ucontact_pack_params(ct->params, &params) < 0)
+			return -1;
+		if (CDB_DICT_ADD_STR(ct_fields, "params", &params) != 0)
+			return -1;
+	}
+
 done:
 	cdb_dict_add(pair, updates);
+	pkg_free(params.s);
 	return 0;
 }
 
