@@ -577,9 +577,12 @@ int parse_attr_def(char *line, FILE *fp)
 	struct dm_avp_def avps[128];
 	int avp_count = 0;
 	unsigned int vendor_id = -1;
-	size_t buflen = strlen(line);
+	size_t buflen = strlen(line), sub_len = 0;
 	int i, len = buflen, attr_len = strlen("ATTRIBUTE"), name_len, avp_code;
 	char *name, *nt_name = NULL, *newp, *p = line, *end = p + len;
+	/* getline() needs a buffer it owns - "line" is an interior pointer into
+	 * the caller's, so it must not be handed over for reallocation */
+	char *sub_line = NULL;
 	enum dict_avp_basetype avp_type;
 	enum dict_avp_enc_type enc_type = AVP_ENC_TYPE_NONE;
 
@@ -668,8 +671,8 @@ int parse_attr_def(char *line, FILE *fp)
 
 	/* parse the grouped AVP definition (curly braces part) */
 
-	while (getline(&line, &buflen, fp) >= 0) {
-		p = line;
+	while (getline(&sub_line, &sub_len, fp) >= 0) {
+		p = sub_line;
 		len = strlen(p);
 
 		while (isspace(*p)) { p++; len--; }
@@ -678,20 +681,21 @@ int parse_attr_def(char *line, FILE *fp)
 			continue;
 
 		if (*p == '}' || !strlen(p))
-			goto create_avp;
+			break;
 
 		if (avp_count >= 128) {
 			LOG_ERROR("max AVP count exceeded (128)\n");
-			free(nt_name);
-			return -1;
+			goto error;
 		}
 
 		if (parse_avp_def(avps, &avp_count, p, len) != 0) {
-			LOG_ERROR("failed to parse Grouped sub-AVP line: '%s'\n", line);
-			free(nt_name);
-			return -1;
+			LOG_ERROR("failed to parse Grouped sub-AVP line: '%s'\n", sub_line);
+			goto error;
 		}
 	}
+
+	free(sub_line);
+	sub_line = NULL;
 
 create_avp:;
 	struct dict_object *parent, *avp_ref, **pref;
@@ -750,6 +754,7 @@ create_avp:;
 	return 0;
 error:
 	LOG_ERROR("failed to parse line: %s\n", line);
+	free(sub_line);
 	free(nt_name);
 	return -1;
 }
@@ -902,8 +907,11 @@ int parse_command_def(char *line, FILE *fp, int cmd_type)
 	struct dict_object *cmd = NULL;
 	unsigned int cmd_code = -1;
 	char *p = line, cmd_name[128 + 1], *bkp, *newp;
-	size_t buflen = strlen(line);
+	size_t buflen = strlen(line), sub_len = 0;
 	int i, len = buflen, cmd_name_len = -1, avp_count = 0;
+	/* getline() needs a buffer it owns - "line" is an interior pointer into
+	 * the caller's, so it must not be handed over for reallocation */
+	char *sub_line = NULL;
 	struct dm_avp_def avps[128];
 
 	switch (cmd_type) {
@@ -951,8 +959,8 @@ int parse_command_def(char *line, FILE *fp, int cmd_type)
 
 	LOG_DBG("parsed Cmd-Code %d (%s)\n", cmd_code, cmd_name);
 
-	while (getline(&line, &buflen, fp) >= 0) {
-		p = line;
+	while (getline(&sub_line, &sub_len, fp) >= 0) {
+		p = sub_line;
 		len = strlen(p);
 
 		while (isspace(*p)) { p++; len--; }
@@ -961,20 +969,23 @@ int parse_command_def(char *line, FILE *fp, int cmd_type)
 			continue;
 
 		if (*p == '}' || !strlen(p))
-			goto define_req;
+			break;
 
 		if (avp_count >= 128) {
 			LOG_ERROR("max AVP count exceeded (128)\n");
+			free(sub_line);
 			return -1;
 		}
 
 		if (parse_avp_def(avps, &avp_count, p, len) != 0) {
-			LOG_ERROR("failed to parse Command AVP line: '%s'\n", line);
+			LOG_ERROR("failed to parse Command AVP line: '%s'\n", sub_line);
+			free(sub_line);
 			return -1;
 		}
 	}
 
-define_req:
+	free(sub_line);
+
 	LOG_DBG("defining request (%d AVPs in total)...\n", avp_count);
 
 	struct dict_cmd_data req_data = {
