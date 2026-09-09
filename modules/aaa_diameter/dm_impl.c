@@ -54,6 +54,9 @@ struct fd_msg_list {
  * to consume them */
 struct list_head dm_unreplied_req;
 gen_lock_t dm_unreplied_req_lk;
+/* cJSON's allocator hooks are a process-wide global, and freeDiameter runs
+ * the message callbacks below on a thread pool - see dm_receive_req() */
+gen_lock_t dm_json_hooks_lk;
 unsigned int dm_unreplied_req_timeout = 120; /* sec */
 
 
@@ -548,10 +551,15 @@ static int dm_receive_req(struct msg **_req, struct avp * avp, struct session * 
 	struct msg *req = *_req;
 	struct msg_hdr *hdr = NULL;
 	str tid = STR_NULL, avp_arr = STR_NULL;
+	int rc;
 
 	FD_CHECK(fd_msg_hdr(req, &hdr));
 	LM_DBG("received Diameter request (appl: %u, cmd: %u)\n", hdr->msg_appl, hdr->msg_code);
 
+	/* cJSON_InitHooks() swaps a process-wide allocator, so two callback
+	 * threads running here at once would each free the other's objects
+	 * through the wrong allocator */
+	lock_get(&dm_json_hooks_lk);
 	cJSON_InitHooks(&shm_mem_hooks);
 	avps = cJSON_CreateArray();
 	if (!avps) {
@@ -615,11 +623,14 @@ static int dm_receive_req(struct msg **_req, struct avp * avp, struct session * 
 	goto out;
 
 error:
-	FD_CHECK(fd_msg_free(req));
+	rc = fd_msg_free(req);
+	if (rc != 0)
+		LM_ERR("error in fd_msg_free: %d\n", rc);
 out:
 	cJSON_PurgeString(avp_arr.s);
 	cJSON_Delete(avps);
 	cJSON_InitHooks(NULL);
+	lock_release(&dm_json_hooks_lk);
 
 	*_req = NULL;
 	*act = DISP_ACT_CONT;
@@ -648,6 +659,7 @@ static int dm_receive_msg(struct msg **_msg, struct avp * avp, struct session * 
 	LM_DBG("received Diameter answer (appl: %u, cmd: %u)\n",
 	        hdr->msg_appl, hdr->msg_code);
 
+	lock_get(&dm_json_hooks_lk);
 	cJSON_InitHooks(&shm_mem_hooks);
 	avps = cJSON_CreateArray();
 	if (!avps) {
@@ -671,14 +683,20 @@ static int dm_receive_msg(struct msg **_msg, struct avp * avp, struct session * 
 			goto out;
 		}
 
-		FD_CHECK_GT(fd_msg_avp_hdr(a, &h));
+		if (fd_msg_avp_hdr(a, &h) != 0) {
+			LM_ERR("failed to read the Transaction-Id AVP header\n");
+			goto out;
+		}
 		tid.s = (char *)h->avp_value->os.data;
 		tid.len = (int)h->avp_value->os.len;
 
 		LM_DBG("%d/%d reply, Transaction-Id: %.*s\n", hdr->msg_appl,
 			   hdr->msg_code, tid.len, tid.s);
 	} else {
-		FD_CHECK_GT(fd_msg_avp_hdr(a, &h));
+		if (fd_msg_avp_hdr(a, &h) != 0) {
+			LM_ERR("failed to read the Session-Id AVP header\n");
+			goto out;
+		}
 		tid.s = (char *)h->avp_value->os.data;
 		tid.len = (int)h->avp_value->os.len;
 
@@ -709,7 +727,7 @@ static int dm_receive_msg(struct msg **_msg, struct avp * avp, struct session * 
 	hash_remove_key(pending_replies, tid);
 	hash_unlock(pending_replies, hentry);
 
-	FD_CHECK(fd_msg_search_avp(msg, dm_dict.Error_Message, &a));
+	fd_msg_search_avp(msg, dm_dict.Error_Message, &a);
 	if (a) {
 		rpl_cond->rpl.is_error = 1;
 		rc = fd_msg_avp_hdr(a, &h);
@@ -729,6 +747,7 @@ out:
 	if (avps)
 		cJSON_Delete(avps);
 	cJSON_InitHooks(NULL);
+	lock_release(&dm_json_hooks_lk);
 
 	FD_CHECK(fd_msg_free(msg));
 	*_msg = NULL;
