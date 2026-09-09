@@ -102,6 +102,11 @@ modparam("auth_aaa", "aaa_url", "diameter:freeDiameter.conf;extra-avps-file:/etc
 The realm placed in the Origin-Realm and Destination-Realm AVPs.
 
 
+Set it to the empty string to fall back to the realm of the SIP
+authentication request instead, which is what the module did before the
+parameter reached these two AVPs.
+
+
 Default value is "diameter.test".
 
 

@@ -533,8 +533,15 @@ static int aka_av_diameter_fetch(str *realm, str *impu, str *impi,
 	cJSON_ADD_OBJ(req, AKA_AV_DM_SESSION, cJSON_CreateString(sess));
 	sess_obj = cJSON_GetArrayItem(req, 0)->child; /* the session is the first */
 	cJSON_ADD_OBJ(req, AKA_AV_DM_ORIGIN_HOST, cJSON_CreateString(aka_av_dm_host.s));
-	cJSON_ADD_OBJ(req, AKA_AV_DM_ORIGIN_REALM, cJSON_CreateStr(realm->s, realm->len));
-	cJSON_ADD_OBJ(req, AKA_AV_DM_DST_REALM, cJSON_CreateStr(realm->s, realm->len));
+	if (aka_av_dm_realm.len > 0) {
+		cJSON_ADD_OBJ(req, AKA_AV_DM_ORIGIN_REALM,
+				cJSON_CreateStr(aka_av_dm_realm.s, aka_av_dm_realm.len));
+		cJSON_ADD_OBJ(req, AKA_AV_DM_DST_REALM,
+				cJSON_CreateStr(aka_av_dm_realm.s, aka_av_dm_realm.len));
+	} else {
+		cJSON_ADD_OBJ(req, AKA_AV_DM_ORIGIN_REALM, cJSON_CreateStr(realm->s, realm->len));
+		cJSON_ADD_OBJ(req, AKA_AV_DM_DST_REALM, cJSON_CreateStr(realm->s, realm->len));
+	}
 
 	tmp = cJSON_CreateArray();
 	if (!tmp) {
