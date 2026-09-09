@@ -620,6 +620,26 @@ static void rtp_relay_b2b_reply_free(void *param)
 static void rtp_relay_b2b_tm_reply(struct cell* t, int type, struct tmcb_params *p)
 {
 	struct rtp_relay_b2b_reply *rpl = (*p->param);
+	struct rtp_relay_session info;
+
+	/* b2b_logic answers a 401/407 on an outgoing INVITE by resending it with
+	 * credentials in a new local transaction, so this is not the end of the
+	 * offer - but handle_rtp_relay_ctx_leg_reply() sees a status above 300
+	 * and frees the session, and the retry then finds nothing to work with.
+	 * Release the allocation made for the rejected attempt and put the
+	 * session back into the state it had before the offer, so the retry
+	 * offers again instead of trying to answer. */
+	if (p->rpl && p->rpl != FAKED_REPLY &&
+			(p->rpl->REPLY_STATUS == 401 || p->rpl->REPLY_STATUS == 407)) {
+		memset(&info, 0, sizeof info);
+		info.msg = p->rpl;
+		if (!rtp_sess_late(rpl->sess))
+			rtp_relay_delete(&info, rpl->ctx, rpl->sess, rpl->type);
+		rtp_sess_reset_ongoing(rpl->sess);
+		rtp_sess_reset_pending(rpl->sess);
+		return;
+	}
+
 	handle_rtp_relay_ctx_leg_reply(rpl->ctx, p->rpl, NULL, rpl->sess, rpl->type);
 }
 
@@ -742,10 +762,24 @@ static void rtp_relay_b2b_tm_req(struct cell* t, int type, struct tmcb_params *p
 
 	LM_RTP_DBG("sess=%p late=%d ongoing=%d index=%d\n",
 			sess, rtp_sess_late(sess), rtp_sess_ongoing(sess), sess->index);
-	if (!rtp_sess_late(sess) && !rtp_sess_ongoing(sess))
+	if (!rtp_sess_late(sess) && !rtp_sess_ongoing(sess)) {
+		/* Keep the SDP of this first attempt. If the far end challenges the
+		 * INVITE, b2b_logic resends the request as we last built it - with
+		 * the lumps rtp_relay_offer() applied - and offering that back to
+		 * the relay gives it its own rewritten addresses and codec list
+		 * instead of the ones the endpoint asked for. The BODY flag is
+		 * exactly the "use this body for the leg" slot that offer and answer
+		 * already honour, and a body the script pinned there is left
+		 * alone. */
+		if (info.body && info.body->len && sess->legs[ltype] &&
+				!sess->legs[ltype]->flags[RTP_RELAY_FLAGS_BODY].s &&
+				shm_str_dup(&sess->legs[ltype]->flags[RTP_RELAY_FLAGS_BODY],
+					info.body) < 0)
+			LM_ERR("could not save the offer body for a possible retry\n");
 		rtp_relay_offer(&info, ctx, sess, ltype, NULL);
-	else
+	} else {
 		rtp_relay_answer(&info, ctx, sess, ltype, NULL);
+	}
 }
 
 static void rtp_relay_b2b_new_local(struct cell* t, int type, struct tmcb_params *ps)
