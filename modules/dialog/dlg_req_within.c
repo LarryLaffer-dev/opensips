@@ -370,7 +370,15 @@ dlg_t * build_dialog_info(struct dlg_cell * cell, int dst_leg, int src_leg,
 		/*local sequence number*/
 		cseq = cell->legs[dst_leg].r_cseq;
 		if( !cseq.s || !cseq.len || str2int(&cseq, &loc_seq) != 0){
-			LM_ERR("invalid cseq\n");
+			/* a leg of an early dialog has no r_cseq until it is
+			 * established, so this is the expected answer while the
+			 * precondition handshake is still going on rather than a sign
+			 * of corrupt state */
+			if (cell->state <= DLG_STATE_EARLY &&
+			!leg_is_answered(&cell->legs[dst_leg]))
+				LM_DBG("no cseq on leg %d yet, not established\n", dst_leg);
+			else
+				LM_ERR("invalid cseq\n");
 			goto error;
 		}
 
@@ -942,7 +950,14 @@ int send_leg_msg(struct dlg_cell *dlg,str *method,int src_leg,int dst_leg,
 	if ((dialog_info = build_dialog_info(dlg, dst_leg, src_leg,reply_marker,
 		!(method->len == 3 && memcmp(method->s, "ACK", 3) == 0))) == 0)
 	{
-		LM_ERR("failed to create dlg_t\n");
+		/* see build_dialog_info(): expected while the target leg of an
+		 * early dialog is not established yet */
+		if (dlg->state <= DLG_STATE_EARLY &&
+		!leg_is_answered(&dlg->legs[dst_leg]))
+			LM_DBG("cannot build in-dialog %.*s toward leg %d, not "
+				"established yet\n", method->len, method->s, dst_leg);
+		else
+			LM_ERR("failed to create dlg_t\n");
 		return -1;
 	}
 
