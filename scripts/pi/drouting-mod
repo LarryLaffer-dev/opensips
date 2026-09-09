@@ -77,6 +77,7 @@
 				<col><field>sort_profile</field></col>
 				<col><field>attrs</field></col>
 				<col><field>description</field></col>
+				<col><field>disabled</field></col>
 			</query_cols>
 		</cmd>
 		<cmd><cmd_name>add</cmd_name>
@@ -93,6 +94,7 @@
 				<col><field>sort_profile</field></col>
 				<col><field>attrs</field></col>
 				<col><field>description</field></col>
+				<col><field>disabled</field></col>
 			</query_cols>
 		</cmd>
 		<cmd><cmd_name>update</cmd_name>
@@ -112,6 +114,7 @@
 				<col><field>sort_profile</field></col>
 				<col><field>attrs</field></col>
 				<col><field>description</field></col>
+				<col><field>disabled</field></col>
 			</query_cols>
 		</cmd>
 		<cmd><cmd_name>delete</cmd_name>

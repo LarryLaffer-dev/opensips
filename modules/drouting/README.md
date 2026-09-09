@@ -211,6 +211,9 @@ carrier) you may specify a weight. For how this list will be interpreted
 "gw1,gw4,#cr3" or "gw1=10,gw4=10,#cr3=80"
 - attributes (not used by DR engine, but only pushed
 to script level when this rule matched and been used)
+- disabled (0 or 1) - if set to 1, the rule is skipped when the
+routing data is loaded, so it never takes part in matching. Set it back to
+0 and run [drouting:reload](#droutingreload) to bring the rule back
 
 
 More on time recurrence:

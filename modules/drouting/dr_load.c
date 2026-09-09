@@ -318,7 +318,7 @@ rt_data_t* dr_load_routing_info(struct head_db *part,
 	db_con_t* db_hdl = *part->db_con;
 	str *drd_table = &part->drd_table;
 	str *drc_table = &part->drc_table;
-	db_key_t columns[10];
+	db_key_t columns[11];
 	db_res_t* res;
 	db_row_t* row;
 	rt_info_t *ri;
@@ -642,20 +642,22 @@ rt_data_t* dr_load_routing_info(struct head_db *part,
 		columns[7] = &sort_alg_drr_col;
 		columns[8] = &sort_profile_drr_col;
 		columns[9] = &attrs_drr_col;
+		columns[10] = &disabled_drr_col;
 
 		if (DB_CAPABILITY(*dr_dbf, DB_CAP_FETCH)) {
-			if ( dr_dbf->query( db_hdl, 0, 0, 0, columns, 0, 10, 0, 0) < 0) {
+			if ( dr_dbf->query( db_hdl, 0, 0, 0, columns, 0, 11, 0, 0) < 0) {
 				LM_ERR("DB query failed\n");
 				goto error;
 			}
-			no_rows = estimate_available_rows( 4+32+32+128+32+64+128+4+1, 10/*cols*/);
+			no_rows = estimate_available_rows( 4+32+32+128+32+64+128+4+1+1,
+				11/*cols*/);
 			if (no_rows==0) no_rows = 10;
 			if(dr_dbf->fetch_result(db_hdl, &res, no_rows)<0) {
 				LM_ERR("Error fetching rows (2)\n");
 				goto error;
 			}
 		} else {
-			if ( dr_dbf->query( db_hdl, 0, 0, 0, columns, 0, 10, 0, &res) < 0) {
+			if ( dr_dbf->query( db_hdl, 0, 0, 0, columns, 0, 11, 0, &res) < 0) {
 				LM_ERR("DB query failed\n");
 				goto error;
 			}
@@ -671,6 +673,16 @@ rt_data_t* dr_load_routing_info(struct head_db *part,
 				/* RULE_ID column */
 				check_val( rule_id_drr_col, ROW_VALUES(row), DB_INT, 1, 0);
 				int_vals[INT_VALS_RULE_ID_DRR_COL] = VAL_INT (ROW_VALUES(row));
+				/* DISABLED column - a disabled rule is not loaded at all, so
+				 * it costs nothing at matching time. NULL or an unexpected
+				 * type counts as enabled */
+				check_val2( disabled_drr_col, ROW_VALUES(row)+10, DB_INT,
+					DB_BIGINT, 0, 0);
+				if (!(ROW_VALUES(row)+10)->nul && VAL_INT(ROW_VALUES(row)+10)) {
+					LM_DBG("skipping disabled rule %d\n",
+						int_vals[INT_VALS_RULE_ID_DRR_COL]);
+					continue;
+				}
 				/* GROUP column */
 				check_val( group_drr_col, ROW_VALUES(row)+1, DB_STRING, 1, 1);
 				str_vals[STR_VALS_GROUP_DRR_COL] =

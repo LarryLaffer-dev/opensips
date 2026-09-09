@@ -15,7 +15,7 @@ CREATE TABLE dr_gateways (
 );
 
 ALTER SEQUENCE dr_gateways_id_seq MAXVALUE 2147483647 CYCLE;
-INSERT INTO version (table_name, table_version) values ('dr_rules','4');
+INSERT INTO version (table_name, table_version) values ('dr_rules','5');
 CREATE TABLE dr_rules (
     ruleid SERIAL PRIMARY KEY NOT NULL,
     groupid VARCHAR(255) NOT NULL,
@@ -27,7 +27,8 @@ CREATE TABLE dr_rules (
     sort_alg VARCHAR(1) DEFAULT 'N' NOT NULL,
     sort_profile INTEGER DEFAULT NULL,
     attrs VARCHAR(255) DEFAULT NULL,
-    description VARCHAR(128) DEFAULT NULL
+    description VARCHAR(128) DEFAULT NULL,
+    disabled INTEGER DEFAULT 0 NOT NULL
 );
 
 ALTER SEQUENCE dr_rules_ruleid_seq MAXVALUE 2147483647 CYCLE;

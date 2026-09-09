@@ -28,7 +28,7 @@ dr_carriers:3
 dr_gateways:6
 dr_groups:2
 dr_partitions:1
-dr_rules:4
+dr_rules:5
 emergency_report:1
 emergency_routing:1
 emergency_service_provider:1

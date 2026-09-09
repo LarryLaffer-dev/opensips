@@ -22,7 +22,7 @@ END dr_gateways_tr;
 /
 BEGIN map2users('dr_gateways'); END;
 /
-INSERT INTO version (table_name, table_version) values ('dr_rules','4');
+INSERT INTO version (table_name, table_version) values ('dr_rules','5');
 CREATE TABLE dr_rules (
     ruleid NUMBER(10) PRIMARY KEY,
     groupid VARCHAR2(255),
@@ -34,7 +34,8 @@ CREATE TABLE dr_rules (
     sort_alg VARCHAR2(1) DEFAULT 'N',
     sort_profile NUMBER(10) DEFAULT NULL,
     attrs VARCHAR2(255) DEFAULT NULL,
-    description VARCHAR2(128) DEFAULT NULL
+    description VARCHAR2(128) DEFAULT NULL,
+    disabled NUMBER(10) DEFAULT 0 NOT NULL
 );
 
 CREATE OR REPLACE TRIGGER dr_rules_tr

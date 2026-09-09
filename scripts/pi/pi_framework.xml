@@ -523,6 +523,7 @@
 		<column><field>sort_profile</field><type>DB_INT</type></column>
 		<column><field>attrs</field><type>DB_STR</type></column>
 		<column><field>description</field><type>DB_STR</type></column>
+		<column><field>disabled</field><type>DB_INT</type></column>
 	</db_table>
 	<!-- Declaration of dr_carriers table-->
 	<db_table id="dr_carriers">
@@ -3044,6 +3045,7 @@
 				<col><field>sort_profile</field></col>
 				<col><field>attrs</field></col>
 				<col><field>description</field></col>
+				<col><field>disabled</field></col>
 			</query_cols>
 		</cmd>
 		<cmd><cmd_name>add</cmd_name>
@@ -3060,6 +3062,7 @@
 				<col><field>sort_profile</field></col>
 				<col><field>attrs</field></col>
 				<col><field>description</field></col>
+				<col><field>disabled</field></col>
 			</query_cols>
 		</cmd>
 		<cmd><cmd_name>update</cmd_name>
@@ -3079,6 +3082,7 @@
 				<col><field>sort_profile</field></col>
 				<col><field>attrs</field></col>
 				<col><field>description</field></col>
+				<col><field>disabled</field></col>
 			</query_cols>
 		</cmd>
 		<cmd><cmd_name>delete</cmd_name>

@@ -51,7 +51,7 @@
 #define DR_PARAM_INTERNAL_TRIGGERED (1<<30)
 
 #define DRD_TABLE_VER 6
-#define DRR_TABLE_VER 4
+#define DRR_TABLE_VER 5
 #define DRG_TABLE_VER 2
 #define DRC_TABLE_VER 3
 #define PART_TABLE_VER 1
