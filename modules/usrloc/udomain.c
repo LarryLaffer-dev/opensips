@@ -682,6 +682,14 @@ int preload_udomain(db_con_t* _c, udomain_t* _d)
 				LM_DBG("regenerated contact id to %"PRIu64"\n", ci->contact_id);
 			}
 
+			/* Let interested modules rebuild their per-contact state from
+			 * the restored row.  Raised only for the contact that survives
+			 * the cid_regen path, and kept distinct from UL_CONTACT_INSERT
+			 * so modules acting on live registrations (e.g. pua_reginfo)
+			 * are not triggered by a startup preload. */
+			if (exists_ulcb_type(UL_CONTACT_LOAD))
+				run_ul_callbacks(UL_CONTACT_LOAD, c, NULL);
+
 			unlock_udomain(_d, &user);
 		}
 

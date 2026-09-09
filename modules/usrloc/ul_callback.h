@@ -43,7 +43,10 @@ typedef enum ul_cb_types {
 	UL_AOR_UPDATE         = (1<<5),
 	UL_AOR_DELETE         = (1<<6), /* exclusive with EXPIRE */
 	UL_AOR_EXPIRE         = (1<<7), /* exclusive with DELETE */
-	ULCB_MAX              = ((1<<8)-1),
+	/* contact restored from SQL by the restart persistency preload, as
+	 * opposed to UL_CONTACT_INSERT which signals a live registration */
+	UL_CONTACT_LOAD       = (1<<8),
+	ULCB_MAX              = ((1<<9)-1),
 } ul_cb_type;
 
 typedef union ul_cb_extra {
@@ -57,7 +60,8 @@ typedef union ul_cb_extra {
 
 #define is_contact_cb(type) \
 	(type & \
-	(UL_CONTACT_INSERT|UL_CONTACT_UPDATE|UL_CONTACT_DELETE|UL_CONTACT_EXPIRE))
+	(UL_CONTACT_INSERT|UL_CONTACT_UPDATE|UL_CONTACT_DELETE|UL_CONTACT_EXPIRE| \
+	 UL_CONTACT_LOAD))
 
 #define is_aor_cb(type) \
 	(type & \
