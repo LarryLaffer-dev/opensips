@@ -204,6 +204,10 @@ static char b2bl_from_buf[B2BL_FROM_BUF_LEN + 1];
 str db_url= {0, 0};
 str cdb_url;
 str cdb_key_prefix = str_init("b2bl$");
+/* expiry (seconds) applied to cachedb tuple keys; 0 disables it. Defaults to
+ * 4 hours so that tuples leaked by an abnormal teardown are eventually
+ * reclaimed instead of accumulating as orphaned, no-TTL keys */
+int cdb_expire = 14400;
 db_con_t *b2bl_db = NULL;
 db_func_t b2bl_dbf;
 str b2bl_dbtable= str_init("b2b_logic");
@@ -329,6 +333,7 @@ static const param_export_t params[]=
 	{"db_url",          STR_PARAM,                &db_url.s                  },
 	{"cachedb_url",     STR_PARAM, 				  &cdb_url.s         		 },
 	{"cachedb_key_prefix",    STR_PARAM, 	 	  &cdb_key_prefix.s  		 },
+	{"cachedb_expire",  INT_PARAM,                &cdb_expire                },
 	{"db_table",        STR_PARAM,                &b2bl_dbtable.s            },
 	{"max_duration",    INT_PARAM,                &max_duration              },
 	/*

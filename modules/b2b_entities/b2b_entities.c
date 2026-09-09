@@ -68,6 +68,10 @@ struct script_route_ref *reply_route_ref = NULL;
 str db_url;
 str b2be_cdb_url;
 str cdb_key_prefix = str_init("b2be$");
+/* expiry (seconds) applied to cachedb entity keys; 0 disables it. Defaults to
+ * 4 hours so that entries leaked by an abnormal teardown are eventually
+ * reclaimed instead of accumulating as orphaned, no-TTL keys */
+int cdb_expire = 14400;
 db_con_t *b2be_db;
 db_func_t b2be_dbf;
 str b2be_dbtable= str_init("b2b_entities");
@@ -140,6 +144,7 @@ static const param_export_t params[]={
 	{ "db_url",                STR_PARAM,    &db_url.s           },
 	{ "cachedb_url",           STR_PARAM, 	 &b2be_cdb_url.s     },
 	{ "cachedb_key_prefix",    STR_PARAM, 	 &cdb_key_prefix.s   },
+	{ "cachedb_expire",        INT_PARAM,    &cdb_expire         },
 	{ "db_table",              STR_PARAM,    &b2be_dbtable.s     },
 	{ "db_mode",               INT_PARAM,    &b2be_db_mode       },
 	{ "update_period",         INT_PARAM,    &b2b_update_period  },

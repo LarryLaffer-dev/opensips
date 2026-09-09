@@ -291,7 +291,7 @@ void b2b_logic_dump(int no_lock)
 							qvals[j].nul = 0;
 					}
 
-					if (b2bl_cdbf.map_set(b2bl_cdb, cdb_key, NULL, &cdb_pairs))
+					if (b2bl_cdbf.map_set(b2bl_cdb, cdb_key, NULL, &cdb_pairs, cdb_expire))
 						LM_ERR("cachedb set failed\n");
 
 					pkg_free(cdb_key->s);
@@ -323,7 +323,7 @@ void b2b_logic_dump(int no_lock)
 
 					cdb_add_n_pairs(&cdb_pairs, n_query_update, n_insert_cols-1);
 
-					if (b2bl_cdbf.map_set(b2bl_cdb, cdb_key, NULL, &cdb_pairs))
+					if (b2bl_cdbf.map_set(b2bl_cdb, cdb_key, NULL, &cdb_pairs, cdb_expire))
 						LM_ERR("cachedb set failed\n");
 
 					pkg_free(cdb_key->s);
@@ -730,7 +730,17 @@ int b2b_logic_restore_cdb(void)
 
 		memset(vals, 0, sizeof vals);
 
-		get_val_from_dict(0, 1, &pair->val.val.dict, vals);
+		/* A key may carry our prefix yet not be a valid tuple record:
+		 * e.g. an orphaned/foreign key (possibly of a different Redis type)
+		 * left behind by an abnormal teardown. Skip such keys instead of
+		 * aborting the whole restore, which would otherwise fail mod_init
+		 * and send the process into a crash-loop. */
+		if (get_val_from_dict(0, 1, &pair->val.val.dict, vals) < 0 ||
+			!vals[0].s.s || !vals[0].s.len) {
+			LM_WARN("skipping malformed/foreign b2b logic key [%.*s]\n",
+				pair->key.name.len, pair->key.name.s);
+			continue;
+		}
 		get_val_from_dict(1, 1, &pair->val.val.dict, vals);
 		get_val_from_dict(2, 0, &pair->val.val.dict, vals);
 		get_val_from_dict(3, 0, &pair->val.val.dict, vals);
@@ -756,8 +766,9 @@ int b2b_logic_restore_cdb(void)
 		get_val_from_dict(20, 1, &pair->val.val.dict, vals);
 
 		if (load_tuple(vals) < 0) {
-			cdb_free_rows(&res);
-			return -1;
+			LM_WARN("skipping b2b logic key [%.*s] that could not be "
+				"restored\n", pair->key.name.len, pair->key.name.s);
+			continue;
 		}
 	}
 
@@ -830,7 +841,7 @@ void b2bl_db_insert(b2bl_tuple_t* tuple)
 				qvals[j].nul = 0;
 		}
 
-		if (b2bl_cdbf.map_set(b2bl_cdb, cdb_key, NULL, &cdb_pairs) != 0)
+		if (b2bl_cdbf.map_set(b2bl_cdb, cdb_key, NULL, &cdb_pairs, cdb_expire) != 0)
 			LM_ERR("cachedb set failed\n");
 
 		pkg_free(cdb_key->s);
@@ -893,7 +904,7 @@ void b2bl_db_update(b2bl_tuple_t* tuple)
 
 		cdb_add_n_pairs(&cdb_pairs, n_query_update, ci - 1);
 
-		if (b2bl_cdbf.map_set(b2bl_cdb, cdb_key, NULL, &cdb_pairs) != 0)
+		if (b2bl_cdbf.map_set(b2bl_cdb, cdb_key, NULL, &cdb_pairs, cdb_expire) != 0)
 			LM_ERR("cachedb set failed\n");
 
 		pkg_free(cdb_key->s);

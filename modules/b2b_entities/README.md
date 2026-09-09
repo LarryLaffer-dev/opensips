@@ -174,6 +174,30 @@ modparam("b2b_entities", "cachedb_key_prefix", "b2b")
 ```
 
 
+#### cachedb_expire (int)
+
+
+Expiry, in seconds, applied to every entity key written to the NoSQL
+database. The expiry is refreshed on each write, so keys belonging to
+live entities never lapse, while keys left behind by an abnormal
+teardown are eventually reclaimed by the backend instead of
+accumulating forever.
+
+Set it to 0 to store keys without any expiry, which is how earlier
+OpenSIPS versions behaved. Make sure the value is comfortably larger
+than the longest dialog you expect to survive.
+
+
+*Default value is "14400"* (4 hours).
+
+
+```opensips title="Set cachedb_expire parameter"
+...
+modparam("b2b_entities", "cachedb_expire", 86400)
+...
+```
+
+
 #### update_period (int)
 
 
