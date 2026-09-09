@@ -39,6 +39,7 @@
 #include "../tls_mgm/api.h"
 #include "rest_client.h"
 #include "rest_methods.h"
+#include "api.h"
 #include "../../pt.h"
 
 /*
@@ -173,6 +174,7 @@ static const cmd_export_t cmds[] = {
 	{"rest_init_client_tls",(cmd_function)w_rest_init_client_tls, {
 		{CMD_PARAM_STR,0,0}, {0,0,0}},
 		ALL_ROUTES},
+	{"load_rest_client", (cmd_function)load_rest_client, {{0,0,0}}, 0},
 	{0,0,{{0,0,0}},0}
 };
 
@@ -782,4 +784,31 @@ static int w_rest_append_hf(struct sip_msg *msg, str *hfv)
 static int w_rest_init_client_tls(struct sip_msg *msg, str *tls_client_dom)
 {
 	return rest_init_client_tls(msg, tls_client_dom);
+}
+
+static int api_init_client_tls(struct sip_msg *msg, const str *tls_client_dom)
+{
+	return rest_init_client_tls(msg, (str *)tls_client_dom);
+}
+
+int load_rest_client(rest_client_api_t *api)
+{
+	if (!api)
+		return -1;
+
+	/* mod_init() only binds tls_mgm when rest_init_client_tls() appears in
+	 * the script, which says nothing about API consumers. tls_mgm's exports
+	 * are available regardless of module init order, so bind here on demand
+	 * and treat its absence as "no TLS client domains", not an error. */
+	if (!tls_api.find_client_domain_name
+	        && load_tls_mgm_api(&tls_api) != 0)
+		LM_DBG("tls_mgm not loaded, init_client_tls() will be unavailable\n");
+
+	api->sync_transfer    = rcl_sync_transfer_raw;
+	api->start_async      = rcl_start_async_raw;
+	api->resume_async     = rcl_resume_async_raw;
+	api->timeout_async    = rcl_timeout_async_raw;
+	api->init_client_tls  = api_init_client_tls;
+
+	return 0;
 }
