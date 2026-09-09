@@ -30,15 +30,259 @@
 static gen_hash_t *aka_users;
 OSIPS_LIST_HEAD(aka_av_managers);
 
+static void aka_av_insert(struct aka_user *user, struct aka_av *av);
 
-int aka_init_mgm(int hash_size)
+/* every cached AV carries the local pending timeout plus a small margin, so
+ * that a node which never sees the answer cannot keep it alive forever */
+static int aka_cdb_av_ttl;
+
+#define AKA_CDB_KEY_PREFIX "aka_av|"
+#define AKA_CDB_KEY_PREFIX_LEN (sizeof(AKA_CDB_KEY_PREFIX) - 1)
+#define AKA_CDB_DELIM '|'
+#define AKA_CDB_FIELDS 7
+
+
+int aka_init_mgm(int hash_size, int pending_timeout)
 {
 	aka_users = hash_init(hash_size);
 	if (!aka_users) {
 		LM_ERR("cannot create AKA users hash\n");
 		return -1;
 	}
+	aka_cdb_av_ttl = pending_timeout + 5;
 	return 0;
+}
+
+
+/* aka_av|<impu>|<impi>|<nonce> - the nonce is base64, the identities are
+ * SIP URIs, so none of them can contain the delimiter */
+static int aka_cdb_build_key(str *impu, str *impi, str *nonce, str *key)
+{
+	char *p;
+
+	key->len = AKA_CDB_KEY_PREFIX_LEN + impu->len + 1 + impi->len + 1 + nonce->len;
+	key->s = pkg_malloc(key->len);
+	if (!key->s) {
+		LM_ERR("oom for cachedb key\n");
+		return -1;
+	}
+
+	p = key->s;
+	memcpy(p, AKA_CDB_KEY_PREFIX, AKA_CDB_KEY_PREFIX_LEN);
+	p += AKA_CDB_KEY_PREFIX_LEN;
+	memcpy(p, impu->s, impu->len);
+	p += impu->len;
+	*p++ = AKA_CDB_DELIM;
+	memcpy(p, impi->s, impi->len);
+	p += impi->len;
+	*p++ = AKA_CDB_DELIM;
+	memcpy(p, nonce->s, nonce->len);
+	return 0;
+}
+
+
+/* <state>|<algmask>|<alg>|<nonce>|<xres>|<ck>|<ik>
+ * everything but the base64 nonce is opaque to us, so it goes out hex
+ * encoded rather than raw - a single stray delimiter byte would otherwise
+ * desynchronise the parser on the other node */
+static int aka_cdb_serialize_av(struct aka_av *av, str *value)
+{
+	char *p;
+
+	value->len = snprintf(NULL, 0, "%d%c%d%c%d%c", av->state, AKA_CDB_DELIM,
+			av->algmask, AKA_CDB_DELIM, av->alg, AKA_CDB_DELIM) +
+		av->authenticate.len + 1 + av->authorize.len * 2 + 1 +
+		av->ck.len * 2 + 1 + av->ik.len * 2;
+
+	value->s = pkg_malloc(value->len);
+	if (!value->s) {
+		LM_ERR("oom for cachedb value\n");
+		return -1;
+	}
+
+	p = value->s;
+	p += sprintf(p, "%d%c%d%c%d%c", av->state, AKA_CDB_DELIM,
+			av->algmask, AKA_CDB_DELIM, av->alg, AKA_CDB_DELIM);
+	memcpy(p, av->authenticate.s, av->authenticate.len);
+	p += av->authenticate.len;
+	*p++ = AKA_CDB_DELIM;
+	/* string2hex() emits a single '0' for an empty input, which would not
+	 * survive the round trip through hex2string() */
+	if (av->authorize.len)
+		p += string2hex(av->authorize.s, av->authorize.len, p);
+	*p++ = AKA_CDB_DELIM;
+	if (av->ck.len)
+		p += string2hex(av->ck.s, av->ck.len, p);
+	*p++ = AKA_CDB_DELIM;
+	if (av->ik.len)
+		p += string2hex(av->ik.s, av->ik.len, p);
+
+	return 0;
+}
+
+
+static int aka_cdb_split(str *value, str *fields)
+{
+	char *p = value->s, *end = value->s + value->len, *delim;
+	int f, last = AKA_CDB_FIELDS - 1;
+
+	for (f = 0; f < AKA_CDB_FIELDS; f++) {
+		if (f == last) {
+			fields[f].s = p;
+			fields[f].len = end - p;
+			break;
+		}
+		delim = memchr(p, AKA_CDB_DELIM, end - p);
+		if (!delim)
+			goto malformed;
+		fields[f].s = p;
+		fields[f].len = delim - p;
+		p = delim + 1;
+	}
+
+	/* the last field runs to the end of the value, so a delimiter left in
+	 * it means we are looking at a format we do not know */
+	if (memchr(fields[last].s, AKA_CDB_DELIM, fields[last].len))
+		goto malformed;
+	return 0;
+
+malformed:
+	LM_ERR("malformed cached AV: %.*s\n", value->len, value->s);
+	return -1;
+}
+
+
+/* returns a detached AV in shm memory, not linked into any user yet */
+static struct aka_av *aka_cdb_deserialize_av(str *value)
+{
+	str fields[AKA_CDB_FIELDS];
+	str *nonce, *xres, *ck, *ik;
+	struct aka_av *av;
+	int state, algmask, alg;
+	char *p;
+
+	if (aka_cdb_split(value, fields) < 0)
+		return NULL;
+
+	if (str2sint(&fields[0], &state) < 0 || str2sint(&fields[1], &algmask) < 0 ||
+			str2sint(&fields[2], &alg) < 0) {
+		LM_ERR("non-numeric header in cached AV: %.*s\n", value->len, value->s);
+		return NULL;
+	}
+
+	nonce = &fields[3];
+	xres = &fields[4];
+	ck = &fields[5];
+	ik = &fields[6];
+
+	if ((xres->len & 1) || (ck->len & 1) || (ik->len & 1)) {
+		LM_ERR("odd-length hex field in cached AV: %.*s\n", value->len, value->s);
+		return NULL;
+	}
+
+	av = shm_malloc(sizeof(*av) + nonce->len +
+			(xres->len + ck->len + ik->len) / 2);
+	if (!av) {
+		LM_ERR("oom for cached AV\n");
+		return NULL;
+	}
+	memset(av, 0, sizeof(*av));
+	av->state = state;
+	av->algmask = algmask;
+	av->alg = alg;
+
+	p = av->buf;
+	av->authenticate.s = p;
+	av->authenticate.len = nonce->len;
+	memcpy(p, nonce->s, nonce->len);
+	p += nonce->len;
+
+	av->authorize.s = p;
+	av->authorize.len = xres->len / 2;
+	av->ck.s = p + av->authorize.len;
+	av->ck.len = ck->len / 2;
+	av->ik.s = av->ck.s + av->ck.len;
+	av->ik.len = ik->len / 2;
+
+	if (hex2string(xres->s, xres->len, av->authorize.s) < 0 ||
+			hex2string(ck->s, ck->len, av->ck.s) < 0 ||
+			hex2string(ik->s, ik->len, av->ik.s) < 0) {
+		LM_ERR("invalid hex field in cached AV: %.*s\n", value->len, value->s);
+		shm_free(av);
+		return NULL;
+	}
+
+	INIT_LIST_HEAD(&av->list);
+	av->ts = av->new_ts = get_ticks();
+	return av;
+}
+
+
+int aka_cdb_store_av(str *impu, str *impi, struct aka_av *av)
+{
+	str key, value;
+	int ret = -1;
+
+	if (!aka_cdb)
+		return 0;
+
+	if (aka_cdb_build_key(impu, impi, &av->authenticate, &key) < 0)
+		return -1;
+
+	if (aka_cdb_serialize_av(av, &value) < 0) {
+		pkg_free(key.s);
+		return -1;
+	}
+
+	if (aka_cdbf.set(aka_cdb, &key, &value, aka_cdb_av_ttl) < 0)
+		LM_ERR("could not store AV %.*s\n", key.len, key.s);
+	else
+		ret = 0;
+
+	pkg_free(key.s);
+	pkg_free(value.s);
+	return ret;
+}
+
+
+struct aka_av *aka_cdb_fetch_av(str *impu, str *impi, str *nonce)
+{
+	str key, value = STR_NULL;
+	struct aka_av *av;
+
+	if (!aka_cdb)
+		return NULL;
+
+	if (aka_cdb_build_key(impu, impi, nonce, &key) < 0)
+		return NULL;
+
+	if (aka_cdbf.get(aka_cdb, &key, &value) < 0 || !value.s) {
+		LM_DBG("no cached AV for %.*s\n", key.len, key.s);
+		pkg_free(key.s);
+		return NULL;
+	}
+
+	av = aka_cdb_deserialize_av(&value);
+	pkg_free(key.s);
+	pkg_free(value.s);
+	return av;
+}
+
+
+int aka_cdb_remove_av(str *impu, str *impi, str *nonce)
+{
+	str key;
+	int ret;
+
+	if (!aka_cdb)
+		return 0;
+
+	if (aka_cdb_build_key(impu, impi, nonce, &key) < 0)
+		return -1;
+
+	ret = aka_cdbf.remove(aka_cdb, &key);
+	pkg_free(key.s);
+	return ret;
 }
 
 
@@ -275,12 +519,28 @@ static struct aka_av *aka_av_match(struct aka_user *user, int algmask, str *nonc
 	return NULL;
 }
 
+/* an AV in any state, so that a cached copy is never linked twice */
+static struct aka_av *aka_av_match_nonce(struct aka_user *user, str *nonce)
+{
+	struct list_head *it;
+	struct aka_av *av;
+
+	list_for_each(it, &user->avs) {
+		av = list_entry(it, struct aka_av, list);
+		if (str_match(nonce, &av->authenticate))
+			return av;
+	}
+	return NULL;
+}
+
 struct aka_av *aka_av_get_nonce(struct aka_user *user, int algmask, str *nonce)
 {
-	struct aka_av *av = NULL;
+	struct aka_av *av = NULL, *dup;
+	int known;
 
 	cond_lock(&user->cond);
 	av = aka_av_match(user, algmask, nonce);
+	known = (av != NULL);
 	if (av) {
 		if (av->state != AKA_AV_USING && av->state != AKA_AV_USED)
 			av = NULL;
@@ -288,6 +548,42 @@ struct aka_av *aka_av_get_nonce(struct aka_user *user, int algmask, str *nonce)
 			av->state = AKA_AV_USED;
 	}
 	cond_unlock(&user->cond);
+
+	if (av || known || !aka_cdb)
+		return av;
+
+	/* we have never seen this nonce - another node may have challenged with
+	 * it, in which case it published the AV before sending the challenge */
+	av = aka_cdb_fetch_av(&user->impu, &user->impi->impi, nonce);
+	if (!av)
+		return NULL;
+
+	if (av->state != AKA_AV_USING && av->state != AKA_AV_USED) {
+		LM_DBG("cached AV for %.*s is in state %d, not challenged yet\n",
+				nonce->len, nonce->s, av->state);
+		shm_free(av);
+		return NULL;
+	}
+
+	if (algmask >= 0 && av->algmask >= 0 && !(algmask & av->algmask)) {
+		LM_DBG("cached AV for %.*s does not match algorithm mask %d\n",
+				nonce->len, nonce->s, algmask);
+		shm_free(av);
+		return NULL;
+	}
+
+	cond_lock(&user->cond);
+	/* another process may have adopted the same AV while we were fetching */
+	dup = aka_av_match_nonce(user, nonce);
+	if (dup) {
+		shm_free(av);
+		av = dup;
+	} else {
+		aka_av_insert(user, av);
+	}
+	av->state = AKA_AV_USED;
+	cond_unlock(&user->cond);
+
 	return av;
 }
 
@@ -369,6 +665,9 @@ int aka_av_get_new_wait(struct aka_user *user, int algmask,
 	}
 end:
 	cond_unlock(&user->cond);
+	/* published outside the lock: the driver may go to the network */
+	if (ret == 1)
+		aka_cdb_store_av(&user->impu, &user->impi->impi, *av);
 	return ret;
 }
 
@@ -389,6 +688,9 @@ int aka_av_get_new(struct aka_user *user, int algmask, struct aka_av **av)
 		user->error_count--;
 	}
 	cond_unlock(&user->cond);
+	/* published outside the lock: the driver may go to the network */
+	if (ret == 1)
+		aka_cdb_store_av(&user->impu, &user->impi->impi, *av);
 	return ret;
 }
 
@@ -504,6 +806,10 @@ int aka_av_drop_all_user(struct aka_user *user)
 			count++;
 			av->state = AKA_AV_INVALID;
 		}
+		/* a dropped AV must not stay usable on the other nodes; this is an
+		 * administrative path, so the driver round trip under the lock is
+		 * preferable to copying every nonce out first */
+		aka_cdb_remove_av(&user->impu, &user->impi->impi, &av->authenticate);
 	}
 	cond_unlock(&user->cond);
 	return count;
@@ -541,6 +847,8 @@ int aka_av_drop(str *pub_id, str *priv_id, str *nonce)
 	else
 		av = NULL;
 	cond_unlock(&user->cond);
+	/* a dropped AV must not stay usable on the other nodes */
+	aka_cdb_remove_av(pub_id, priv_id, nonce);
 	aka_user_release(user);
 	return (av?1:0);
 }
@@ -570,6 +878,8 @@ void aka_av_set_new(struct aka_user *user, struct aka_av *av)
 	av->state = AKA_AV_NEW;
 	av->ts = av->new_ts; /* restore the new timestamp */
 	cond_unlock(&user->cond);
+	/* back to unchallenged - withdraw it so no node can authorize with it */
+	aka_cdb_remove_av(&user->impu, &user->impi->impi, &av->authenticate);
 }
 
 void aka_push_async(struct aka_user *user, struct list_head *subs)

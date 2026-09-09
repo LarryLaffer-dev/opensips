@@ -49,6 +49,10 @@
 
 auth_api_t auth_api;
 
+static str aka_cachedb_url;
+cachedb_funcs aka_cdbf;
+cachedb_con *aka_cdb;
+
 static int aka_www_authorize(struct sip_msg *msg, str *realm);
 static int aka_proxy_authorize(struct sip_msg *msg, str *realm);
 static int aka_www_challenge(struct sip_msg *msg, struct aka_av_mgm *mgm,
@@ -185,6 +189,7 @@ static const param_export_t params[] = {
 	{"hash_size",         INT_PARAM, &aka_hash_size },
 	{"sync_timeout",      INT_PARAM, &aka_sync_timeout },
 	{"async_timeout",      INT_PARAM, &aka_async_timeout },
+	{"cachedb_url",       STR_PARAM, &aka_cachedb_url.s },
 	{0, 0, 0}
 };
 
@@ -218,9 +223,11 @@ static const mi_export_t mi_cmds[] = {
 static const dep_export_t deps = {
 	{ /* OpenSIPS module dependencies */
 		{ MOD_TYPE_DEFAULT, "auth", DEP_ABORT },
+		{ MOD_TYPE_CACHEDB, NULL, DEP_SILENT },
 		{ MOD_TYPE_NULL, NULL, 0 },
 	},
 	{ /* modparam dependencies */
+		{ "cachedb_url", get_deps_cachedb_url },
 		{ NULL, NULL },
 	},
 };
@@ -280,7 +287,28 @@ static int mod_init(void)
 	}
 	aka_async_timeout /= 1000; /* XXX: add support for milliseconds */
 
-	if (aka_init_mgm(aka_hash_size) < 0) {
+	if (aka_cachedb_url.s) {
+		aka_cachedb_url.len = strlen(aka_cachedb_url.s);
+		if (cachedb_bind_mod(&aka_cachedb_url, &aka_cdbf) < 0) {
+			LM_ERR("cannot bind cachedb functions for %.*s\n",
+					aka_cachedb_url.len, aka_cachedb_url.s);
+			return -1;
+		}
+		if (!aka_cdbf.set || !aka_cdbf.get || !aka_cdbf.remove) {
+			LM_ERR("cachedb driver for %.*s does not implement the "
+					"key-value operations needed to share AVs\n",
+					aka_cachedb_url.len, aka_cachedb_url.s);
+			return -1;
+		}
+		aka_cdb = aka_cdbf.init(&aka_cachedb_url);
+		if (!aka_cdb) {
+			LM_ERR("cannot connect to cachedb %.*s\n",
+					aka_cachedb_url.len, aka_cachedb_url.s);
+			return -1;
+		}
+	}
+
+	if (aka_init_mgm(aka_hash_size, aka_pending_timeout) < 0) {
 		LM_ERR("cannot initialize aka management hash\n");
 		return -1;
 	}
@@ -879,6 +907,11 @@ static int aka_authorize(struct sip_msg *_msg, str *_realm,
 			realm.len, realm.s, public_id->len, public_id->s,
 			private_id->len, private_id->s);
 	user = aka_user_find(public_id, private_id);
+	if (user == NULL && aka_cdb && digest->nonce.len)
+		/* the challenge may have been issued by another node; create the
+		 * user so that the AV lookup below can adopt the cached vector.
+		 * If there is none, releasing the user frees it again */
+		user = aka_user_get(public_id, private_id);
 	if (user == NULL) {
 		if (digest->nonce.len)
 			LM_ERR("could not get AKA user %.*s/%.*s with nonce %.*s\n",

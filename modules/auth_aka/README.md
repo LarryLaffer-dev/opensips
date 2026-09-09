@@ -84,6 +84,8 @@ the listed modules must be loaded before this module):
 - *AV manage module*
 -- at least one module that fetches AVs and pushes
 them in the AV storage
+- *cachedb* -- any key-value backend, only if
+[cachedb_url](#cachedb_url-string) is set
 
 
 #### External Libraries or Applications
@@ -249,6 +251,45 @@ Default value is *30* s.
 
 ```opensips title="pending_timeout parameter usage"
 modparam("auth_aka", "pending_timeout", 10)
+		
+```
+
+
+#### cachedb_url (string)
+
+
+URL of a key-value backend used to share authentication vectors between
+OpenSIPS instances. Without it, an AV only ever exists in the memory of
+the node that fetched it, so a UE whose challenge was issued by one node
+gets a *stale nonce* if its authenticated request is
+load-balanced to another.
+
+
+A vector is published when it is handed to a challenge and withdrawn again
+when it is dropped or returned to the pool. It is never published while
+still unused, so a node can only ever adopt a vector that has really been
+sent to the UE. Cached copies carry a TTL of
+[pending_timeout](#pending_timeout-integer) plus five seconds, which means
+they disappear on their own even if the publishing node dies.
+
+
+> [!WARNING]
+> The cached vector contains CK, IK and XRES. Anyone who can read the
+> backend can derive the IPsec keys for that registration, so the backend
+> must sit inside the same security domain as the S-CSCF and be protected
+> per *3GPP TS 33.210*.
+
+
+The backend driver has to implement the plain key-value operations
+(*set*, *get* and *remove*);
+OpenSIPS refuses to start otherwise.
+
+
+By default the parameter is not set and vectors stay node-local.
+
+
+```opensips title="cachedb_url parameter usage"
+modparam("auth_aka", "cachedb_url", "redis://10.0.0.10:6379/")
 		
 ```
 
