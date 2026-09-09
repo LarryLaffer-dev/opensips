@@ -230,6 +230,11 @@ variable could be used to iterate this array.
 - **-2** - Request timeout
 (the [answer_timeout](#answer_timeout-integer) was exceeded
 before an Answer could be processed)
+- **-3** - The peer answered, but with a failure status.  The
+answer is available through
+[$diameter_result_code](#diameter_result_code) and
+[$diameter_experimental_result_code](#diameter_experimental_result_code),
+and its AVPs through *rpl_avps_pv*.
 
 
 This function can be used from any route.
@@ -428,6 +433,52 @@ route[dm_reply] {
 	xlog("rc: $retcode, AVPs: $var(rpl_avps)\n");
 	$json(avps) := $var(rpl_avps);
 }
+```
+
+
+### Exported Pseudo-Variables
+
+
+#### $diameter_result_code
+
+
+The Result-Code AVP of the last Diameter Answer processed by this OpenSIPS
+process, or 0 if the answer carried none.
+
+Read-only.
+
+
+```opensips title="$diameter_result_code usage"
+...
+if (!dm_send_request(16777216, 300, $var(payload), $var(rpl))) {
+	xlog("MAR failed with Result-Code $diameter_result_code\n");
+}
+...
+```
+
+
+#### $diameter_experimental_result_code
+
+
+The Experimental-Result-Code AVP nested inside the Experimental-Result of the
+last Diameter Answer processed by this OpenSIPS process, or 0 if the answer
+carried none.
+
+A vendor-specific application reports its status here rather than in
+Result-Code, so this is where an IMS Cx or Sh failure such as
+DIAMETER_ERROR_USER_UNKNOWN (5001) or DIAMETER_ERROR_IDENTITIES_DONT_MATCH
+(5002) shows up.
+
+Read-only.
+
+
+```opensips title="$diameter_experimental_result_code usage"
+...
+if ($diameter_experimental_result_code == 5001) {
+	send_reply(404, "User Unknown");
+	exit;
+}
+...
 ```
 
 

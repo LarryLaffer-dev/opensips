@@ -709,19 +709,51 @@ static int dm_receive_msg(struct msg **_msg, struct avp * avp, struct session * 
 	hash_remove_key(pending_replies, tid);
 	hash_unlock(pending_replies, hentry);
 
+	rpl_cond->rpl.is_error = 0;
+
+	FD_CHECK(fd_msg_search_avp(msg, dm_dict.Result_Code, &a));
+	if (a && fd_msg_avp_hdr(a, &h) == 0) {
+		rpl_cond->rpl.rc = h->avp_value->u32;
+		LM_DBG("Result-Code: %u\n", h->avp_value->u32);
+		if (!DM_RC_IS_SUCCESS(h->avp_value->u32))
+			rpl_cond->rpl.is_error = 1;
+	}
+
+	/* a vendor-specific answer carries its status in Experimental-Result
+	 * instead - RFC 6733 section 7.6 */
+	FD_CHECK(fd_msg_search_avp(msg, dm_dict.Experimental_Result, &a));
+	if (a) {
+		struct avp *child = NULL;
+
+		fd_msg_browse(a, MSG_BRW_FIRST_CHILD, &child, NULL);
+		for (; child; fd_msg_browse(child, MSG_BRW_NEXT, &child, NULL)) {
+			if (fd_msg_avp_hdr(child, &h) != 0 || !h->avp_value)
+				continue;
+
+			switch (h->avp_code) {
+			case DM_AVP_VENDOR_ID:
+				rpl_cond->vendor_id = h->avp_value->u32;
+				LM_DBG("Experimental-Result Vendor-Id: %u\n",
+					h->avp_value->u32);
+				break;
+			case DM_AVP_EXPERIMENTAL_RESULT_CODE:
+				rpl_cond->experimental_rc = h->avp_value->u32;
+				LM_DBG("Experimental-Result-Code: %u\n", h->avp_value->u32);
+				if (!DM_RC_IS_SUCCESS(h->avp_value->u32))
+					rpl_cond->rpl.is_error = 1;
+				break;
+			}
+		}
+	}
+
 	FD_CHECK(fd_msg_search_avp(msg, dm_dict.Error_Message, &a));
 	if (a) {
 		rpl_cond->rpl.is_error = 1;
-		rc = fd_msg_avp_hdr(a, &h);
-		if (rc != 0) {
-			goto out;
-		}
-
-		LM_DBG("transaction failed (%.*s)\n",
-			(int)h->avp_value->os.len, h->avp_value->os.data);
-	} else {
-		rpl_cond->rpl.is_error = 0;
+		if (fd_msg_avp_hdr(a, &h) == 0)
+			LM_DBG("transaction failed (%.*s)\n",
+				(int)h->avp_value->os.len, h->avp_value->os.data);
 	}
+
 	dm_cond_signal(rpl_cond);
 	dm_cond_unref(rpl_cond);
 

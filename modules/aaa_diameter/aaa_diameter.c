@@ -55,6 +55,30 @@ int dm_answer_timeout = 2000; /* ms */
 int dm_max_json_log_size   = 512;
 int dm_server_autoreply_error; /* ensures we always reply with *something* */
 
+/* status of the most recent Diameter transaction of this process */
+static int dm_last_result_code;
+static int dm_last_experimental_rc;
+
+static int pv_get_dm_result_code(struct sip_msg *msg, pv_param_t *param,
+		pv_value_t *val)
+{
+	return pv_get_sintval(msg, param, val, dm_last_result_code);
+}
+
+static int pv_get_dm_experimental_rc(struct sip_msg *msg, pv_param_t *param,
+		pv_value_t *val)
+{
+	return pv_get_sintval(msg, param, val, dm_last_experimental_rc);
+}
+
+static const pv_export_t mod_pvars[] = {
+	{ str_const_init("diameter_result_code"), 2100,
+	  pv_get_dm_result_code, 0, 0, 0, 0, 0 },
+	{ str_const_init("diameter_experimental_result_code"), 2101,
+	  pv_get_dm_experimental_rc, 0, 0, 0, 0, 0 },
+	{ {0, 0}, 0, 0, 0, 0, 0, 0, 0 }
+};
+
 static const cmd_export_t cmds[]= {
 	{"dm_send_request", (cmd_function)dm_send_request, {
 		{CMD_PARAM_INT,0,0},
@@ -127,7 +151,7 @@ struct module_exports exports =
 	params,           /* param exports */
 	NULL,             /* exported statistics */
 	mi_cmds,          /* exported MI functions */
-	NULL,             /* exported pseudo-variables */
+	mod_pvars,        /* exported pseudo-variables */
 	NULL,             /* exported transformations */
 	procs,            /* extra processes */
 	NULL,             /* module pre-initialization function */
@@ -334,6 +358,9 @@ static int dm_send_request(struct sip_msg *msg, int *app_id, int *cmd_code,
 		goto ret;
 	rc = _dm_get_message_response(rpl, (rpl_avps_pv?&rpl_avps:NULL));
 
+	dm_last_result_code = rpl->rpl.rc;
+	dm_last_experimental_rc = rpl->experimental_rc;
+
 	if (rpl_avps_pv) {
 		pv_value_t val = {(str){rpl_avps, strlen(rpl_avps)}, 0, PV_VAL_STR};
 		if (pv_set_value(msg, rpl_avps_pv, 0, &val) != 0)
@@ -343,7 +370,7 @@ static int dm_send_request(struct sip_msg *msg, int *app_id, int *cmd_code,
 
 	if (rc != 0) {
 		LM_ERR("Diameter request failed (rc: %d)\n", rc);
-		return rc;
+		return -3;
 	}
 
 	return 1;
@@ -511,10 +538,16 @@ static int dm_send_request_async_reply(int fd,
 		goto error;
 	}
 	ret = _dm_get_message_response(amsg->cond, (amsg->ret?&rpl_avps:NULL));
-	if (ret == 0)
+
+	dm_last_result_code = amsg->cond->rpl.rc;
+	dm_last_experimental_rc = amsg->cond->experimental_rc;
+
+	if (ret == 0) {
 		ret = 1;
-	else
+	} else {
 		LM_ERR("Diameter request failed\n");
+		ret = -3;
+	}
 	if (ret > 0 && rpl_avps) {
 		val.rs.s = rpl_avps;
 		val.rs.len = strlen(rpl_avps);

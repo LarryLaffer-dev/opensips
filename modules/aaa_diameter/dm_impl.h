@@ -68,10 +68,18 @@
 #define DM_MSG_SENT ((void *)1)
 #define DM_DUMMY_HANDLE ((void *)-1)
 
+/* AVP codes of the Experimental-Result children, RFC 6733 section 4.5 */
+#define DM_AVP_VENDOR_ID                266
+#define DM_AVP_EXPERIMENTAL_RESULT_CODE 298
+
+/* only the 2xxx range means the request was honoured, RFC 6733 section 7.1 */
+#define DM_RC_IS_SUCCESS(_rc) ((_rc) >= 2000 && (_rc) < 3000)
+
 struct _dm_dict {
 	struct dict_object *Destination_Realm;
 	struct dict_object *Result_Code;
 	struct dict_object *Error_Message;
+	struct dict_object *Experimental_Result;
 
 	struct dict_object *Accounting_Record_Type;
 	struct dict_object *Accounting_Record_Number;
@@ -141,6 +149,10 @@ struct dm_cond {
 	} sync;
 
 	diameter_reply rpl;
+
+	/* Experimental-Result, RFC 6733 section 7.6 */
+	int experimental_rc;
+	int vendor_id;
 };
 
 static inline void dm_cond_ref(struct dm_cond *cond)
