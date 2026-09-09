@@ -487,7 +487,8 @@ end:
 	return ctx->last_branch;
 }
 
-static struct rtp_relay_leg *rtp_relay_get_peer_leg_ctx(struct rtp_relay_ctx *ctx, struct sip_msg *msg)
+static struct rtp_relay_leg *rtp_relay_get_peer_leg_ctx(struct rtp_relay_ctx *ctx,
+		struct sip_msg *msg, int create)
 {
 	str *tag = NULL;
 	struct dlg_cell *dlg;
@@ -509,10 +510,47 @@ static struct rtp_relay_leg *rtp_relay_get_peer_leg_ctx(struct rtp_relay_ctx *ct
 			return NULL;
 		}
 		leg = rtp_relay_get_leg(ctx, &info.fromtag, RTP_RELAY_ALL_BRANCHES);
+		if (!leg && create) {
+			leg = rtp_relay_new_leg(ctx, &info.fromtag, RTP_RELAY_ALL_BRANCHES);
+			if (leg)
+				LM_DBG("registered bridged peer leg [%.*s]\n",
+						info.fromtag.len, info.fromtag.s);
+		}
 		rtp_relay_b2b.release_entity_info(&info);
 		return leg;
 	}
 	return NULL;
+}
+
+/* A bridged-in leg takes over the media position of an existing one, but it
+ * is created blank. The interface steering rtpengine needs - which of its
+ * logical interfaces each side of the call sits on - is carried in the
+ * per-leg flag strings, so a blank leg makes rtpengine fall back to its
+ * default interface and the two sides come out anchored on the wrong
+ * networks: the offer toward one side advertises the address of the other.
+ * Copy the steering from the leg being replaced. Only flags the destination
+ * does not have are filled in, so a leg the script already configured is
+ * left as it is. */
+static void rtp_relay_leg_inherit_media_flags(struct rtp_relay_leg *dst,
+		struct rtp_relay_leg *src)
+{
+	static const enum rtp_relay_var_flags media_flags[] = {
+		RTP_RELAY_FLAGS_SELF, RTP_RELAY_FLAGS_PEER, RTP_RELAY_FLAGS_IP,
+		RTP_RELAY_FLAGS_TYPE, RTP_RELAY_FLAGS_IFACE,
+	};
+	unsigned int i;
+	enum rtp_relay_var_flags f;
+
+	if (!dst || !src || dst == src)
+		return;
+
+	for (i = 0; i < (sizeof(media_flags) / sizeof(media_flags[0])); i++) {
+		f = media_flags[i];
+		if (dst->flags[f].s || !src->flags[f].s)
+			continue;
+		if (shm_str_dup(&dst->flags[f], &src->flags[f]) < 0)
+			LM_ERR("oom inheriting media flag %d onto a bridged leg\n", f);
+	}
 }
 
 static struct rtp_relay_sess *rtp_relay_sess_empty(void)
@@ -656,7 +694,12 @@ static void rtp_relay_b2b_tm_req(struct cell* t, int type, struct tmcb_params *p
 		LM_ERR("could not parse To header\n");
 		return;
 	}
-	peer_leg = rtp_relay_get_peer_leg_ctx(ctx, p->req);
+	/* on a bridge - a transfer carrying Replaces, or a party pulled into a
+	 * conference - the entity on the other side has only just been bridged
+	 * in and is not a leg we know yet. Registering it here anchors its media
+	 * like any in-dialog renegotiation; leaving it unknown sends the request
+	 * out with the endpoint addresses and the bridged call has no media. */
+	peer_leg = rtp_relay_get_peer_leg_ctx(ctx, p->req, 1);
 	if (!peer_leg) {
 		LM_ERR("could not find a pending peer leg!\n");
 		return;
@@ -692,17 +735,29 @@ static void rtp_relay_b2b_tm_req(struct cell* t, int type, struct tmcb_params *p
 	if (!sess) {
 		/* check if there is an existing session with the new leg,
 		 * otherwise create a new one */
+		struct rtp_relay_leg *orig_caller, *orig_callee;
+
 		sess = rtp_relay_get_sess(ctx, last_branch);
 		if (!sess) {
 			LM_ERR("unknown session\n");
 			return;
 		}
+		/* a bridge swaps a new leg into one media position and resolves the
+		 * party that stays to a fresh leg object too, so both positions end
+		 * up blank - carry the steering of the call being replaced over to
+		 * whichever leg takes each position */
+		orig_caller = sess->legs[RTP_RELAY_CALLER];
+		orig_callee = sess->legs[RTP_RELAY_CALLEE];
 		if (sess->legs[RTP_RELAY_CALLEE] == peer_leg) {
 			ltype = RTP_RELAY_CALLEE;
+			rtp_relay_leg_inherit_media_flags(leg, orig_caller);
+			rtp_relay_leg_inherit_media_flags(peer_leg, orig_callee);
 			rtp_relay_push_sess_leg(sess, leg, RTP_RELAY_CALLER);
 			rtp_relay_push_sess_leg(sess, peer_leg, RTP_RELAY_CALLEE);
 		} else {
 			ltype = RTP_RELAY_CALLER;
+			rtp_relay_leg_inherit_media_flags(peer_leg, orig_caller);
+			rtp_relay_leg_inherit_media_flags(leg, orig_callee);
 			rtp_relay_push_sess_leg(sess, peer_leg, RTP_RELAY_CALLER);
 			rtp_relay_push_sess_leg(sess, leg, RTP_RELAY_CALLEE);
 		}
@@ -1993,7 +2048,7 @@ int rtp_relay_ctx_engage(struct sip_msg *msg,
 			rtp_relay_push_sess_leg(sess, rtp_relay_new_leg(ctx,
 					&get_from(msg)->tag_value, index), RTP_RELAY_CALLER);
 	} else {
-		leg = rtp_relay_get_peer_leg_ctx(ctx, msg);
+		leg = rtp_relay_get_peer_leg_ctx(ctx, msg, 0);
 		if (!leg) {
 			LM_ERR("cannot identify the peer's leg\n");
 			return -1;
