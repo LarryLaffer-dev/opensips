@@ -24,6 +24,10 @@
 str media_exchange_name = str_init("media_exchange");
 str content_type_sdp = str_init("application/sdp");
 str content_type_sdp_hdr = str_init("Content-Type: application/sdp\r\n");
+/* SDP direction used when parking a leg on hold, settable through the
+ * hold_media_direction modparam. Only the four direction tokens are accepted,
+ * which all have the same length, as the builder below relies on */
+str media_hold_sdp_direction = str_init("inactive");
 
 str *media_session_get_hold_sdp(struct media_session_leg *msl)
 {
@@ -34,7 +38,8 @@ str *media_session_get_hold_sdp(struct media_session_leg *msl)
 	int attr_to_add = 0;
 	int len, streamnum;
 	static str new_body;
-	/* NOTE: all the attributes have the same length as inactive */
+	/* NOTE: all the direction attributes have the same length, so replacing
+	 * one in place does not change the size of the stream */
 	int leg = MEDIA_SESSION_DLG_OTHER_LEG(msl);
 	str body = dlg_get_out_sdp(msl->ms->dlg, leg);
 
@@ -54,12 +59,14 @@ str *media_session_get_hold_sdp(struct media_session_leg *msl)
 			session_hdr.len = stream->body.s - session->body.s;
 		if (stream->sendrecv_mode.len == 0)
 			attr_to_add++;
-		else if (strncasecmp(stream->sendrecv_mode.s, "inactive", 8) == 0)
-			continue; /* do not disable already disabled stream */
+		else if (strncasecmp(stream->sendrecv_mode.s,
+				media_hold_sdp_direction.s, media_hold_sdp_direction.len) == 0)
+			continue; /* stream is already in the wanted direction */
 		streamnum++;
 	}
 
-	new_body.s = pkg_malloc(body.len + attr_to_add * 12 /* a=inactive\r\n */);
+	new_body.s = pkg_malloc(body.len +
+			attr_to_add * (2 + media_hold_sdp_direction.len + 2) /* a=<dir>\r\n */);
 	if (!new_body.s) {
 		LM_ERR("oom for new body!\n");
 		return NULL;
@@ -85,8 +92,9 @@ str *media_session_get_hold_sdp(struct media_session_leg *msl)
 				memcpy(new_body.s + new_body.len, stream->body.s,
 						stream->sendrecv_mode.s - stream->body.s);
 				new_body.len += len;
-				memcpy(new_body.s + new_body.len, "inactive", 8);
-				new_body.len += 8;
+				memcpy(new_body.s + new_body.len,
+						media_hold_sdp_direction.s, media_hold_sdp_direction.len);
+				new_body.len += media_hold_sdp_direction.len;
 				len += stream->sendrecv_mode.len;
 				memcpy(new_body.s + new_body.len, stream->sendrecv_mode.s +
 						stream->sendrecv_mode.len, stream->body.len - len);
@@ -94,8 +102,13 @@ str *media_session_get_hold_sdp(struct media_session_leg *msl)
 			} else {
 				memcpy(new_body.s + new_body.len, stream->body.s, stream->body.len);
 				new_body.len += stream->body.len;
-				memcpy(new_body.s + new_body.len, "a=inactive\r\n", 12);
-				new_body.len += 12;
+				memcpy(new_body.s + new_body.len, "a=", 2);
+				new_body.len += 2;
+				memcpy(new_body.s + new_body.len,
+						media_hold_sdp_direction.s, media_hold_sdp_direction.len);
+				new_body.len += media_hold_sdp_direction.len;
+				memcpy(new_body.s + new_body.len, "\r\n", 2);
+				new_body.len += 2;
 			}
 		}
 	}

@@ -82,6 +82,36 @@ running OpenSIPS with this module loaded:
 - *None*.
 
 
+### Exported Parameters
+
+
+#### hold_media_direction (string)
+
+
+The SDP direction written into the body sent to the leg that a media
+exchange puts on hold - the party that is left waiting while the other
+one talks to the media server. Accepted values are *inactive*,
+*recvonly*, *sendonly* and *sendrecv*.
+
+
+*inactive* tells the held leg that no media flows in either direction.
+Some devices stop their RTCP supervision of the stream at that point and
+tear the call down on RTCP timeout. Where a keepalive stream is provided
+for the held leg anyway - by the RTP relay, or by a media server that
+keeps sending comfort noise - *recvonly* keeps that leg receiving and
+its supervision consistent.
+
+
+*Default value is "inactive".*
+
+
+```opensips title="Set hold_media_direction parameter"
+...
+modparam("media_exchange", "hold_media_direction", "recvonly")
+...
+```
+
+
 ### Exported Functions
 
 

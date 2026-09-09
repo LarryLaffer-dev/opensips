@@ -29,6 +29,7 @@
 
 extern str media_default_instance;
 extern str content_type_sdp;
+extern str media_hold_sdp_direction;
 extern str content_type_sdp_hdr;
 
 struct media_fork_info;

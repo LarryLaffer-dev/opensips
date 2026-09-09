@@ -31,6 +31,7 @@ struct rtp_relay_binds media_rtp;
 
 static str b2b_media_exchange_cap = str_init("media_exchange");
 str media_default_instance = str_init(MEDIA_DEFAULT_INSTANCE);
+static char *media_hold_direction_param;
 
 static int mod_preinit(void);
 static int mod_init(void);
@@ -133,6 +134,7 @@ static const cmd_export_t cmds[] = {
 
 /* exported parameters */
 static const param_export_t params[] = {
+	{"hold_media_direction", STR_PARAM, &media_hold_direction_param},
 	{0, 0, 0}
 };
 static const mi_export_t mi_cmds[] = {
@@ -231,7 +233,23 @@ static int mod_preinit(void)
  */
 static int mod_init(void)
 {
+	static const char *dirs[] = {"inactive", "recvonly", "sendonly", "sendrecv"};
+	unsigned int i;
+
 	LM_DBG("initializing media_exchange module ...\n");
+
+	if (media_hold_direction_param) {
+		for (i = 0; i < sizeof(dirs)/sizeof(dirs[0]); i++)
+			if (strcasecmp(media_hold_direction_param, dirs[i]) == 0)
+				break;
+		if (i == sizeof(dirs)/sizeof(dirs[0])) {
+			LM_ERR("unknown hold_media_direction '%s' - use one of "
+				"inactive, recvonly, sendonly or sendrecv\n",
+				media_hold_direction_param);
+			return -1;
+		}
+		init_str(&media_hold_sdp_direction, dirs[i]);
+	}
 
 	if (media_b2b.register_cb(media_exchange_event_received,
 			B2BCB_RECV_EVENT, &b2b_media_exchange_cap) < 0) {
