@@ -779,14 +779,37 @@ void ipsec_ctx_release(struct ipsec_ctx *ctx)
 {
 	int free = 0;
 
-	if (!ctx)
+	LM_DBG("Releasing IPSec ctx %p (state %d), ref %d\n", ctx, ctx?ctx->state:0, ctx?ctx->ref:0);
+
+	if (!ctx || ctx->ref <= 0) {
+		LM_DBG("ctx %p is NULL or has invalid ref %d\n", ctx, ctx?ctx->ref:0);
 		return;
+	}
+
+	if (!VALID_IPSEC_STATE(ctx->state)) {
+		LM_DBG("ctx %p is not in a valid state %d\n", ctx, ctx->state);
+		return;
+	}
 
 	lock_get(&ctx->lock);
 	free = ipsec_ctx_release_unsafe(ctx);
-	lock_release(&ctx->lock);
 	if (free)
-		ipsec_ctx_free(ctx);
+		ctx->state = IPSEC_STATE_INVALID;
+	lock_release(&ctx->lock);
+
+	if (!free) {
+		LM_DBG("IPSec ctx %p still referenced (ref=%d)\n", ctx, ctx->ref);
+		return;
+	}
+
+	/* last reference: unlink from the user and from the TMP timer list
+	 * before freeing, so neither is left pointing at dead memory */
+	if (ctx->user) {
+		ipsec_ctx_release_user(ctx);
+		ctx->user = NULL; /* avoid double release */
+	}
+	ipsec_ctx_remove_free_tmp(ctx, 0);
+	ipsec_ctx_free(ctx);
 }
 
 struct ipsec_ctx_tmp {
@@ -828,6 +851,24 @@ void ipsec_ctx_push_user(struct ipsec_user *user, struct ipsec_ctx *ctx, enum ip
 	}
 }
 
+void ipsec_ctx_add_tmp(struct ipsec_ctx *ctx)
+{
+	struct ipsec_ctx_tmp *tmp = shm_malloc(sizeof *tmp);
+	if (!tmp) {
+		LM_ERR("could not push ctx in ue - dropping it!\n");
+		return;
+	}
+	memset(tmp, 0, sizeof *tmp);
+	INIT_LIST_HEAD(&tmp->list);
+	tmp->expire = get_ticks() + ipsec_tmp_timeout;
+	tmp->ctx = ctx;
+	ctx->state = IPSEC_STATE_TMP;
+
+	lock_get(ipsec_tmp_contexts_lock);
+	list_add_tail(&tmp->list, ipsec_tmp_contexts);
+	lock_release(ipsec_tmp_contexts_lock);
+}
+
 void ipsec_ctx_release_tmp_user(struct ipsec_user *user)
 {
 	struct list_head *it, *safe;
@@ -848,10 +889,20 @@ void ipsec_ctx_release_user(struct ipsec_ctx *ctx)
 	struct ipsec_user *user = ctx->user;
 
 	lock_get(&user->lock);
-	if (list_is_valid(&ctx->list)) {
+
+	/* the ctx may already have been unlinked by a concurrent teardown */
+	if (list_is_valid(&ctx->list))
 		list_del(&ctx->list);
-		release = 1;
-	}
+
+	/* the user only exists to hold SAs, so drop it once the last one goes */
+	release = list_empty(&user->sas);
+
+	LM_DBG("released ctx %p from user %.*s, %s\n", ctx,
+			user->impi.len, user->impi.s,
+			release ? "no SAs left" : "SAs remaining");
+
+	ctx->user = NULL; /* avoid double release */
+
 	lock_release(&user->lock);
 	if (release)
 		ipsec_release_user(user);
@@ -869,36 +920,58 @@ void ipsec_ctx_timer(unsigned int ticks, void* param)
 
 	lock_get(ipsec_tmp_contexts_lock);
 	list_for_each_safe(it, safe, ipsec_tmp_contexts) {
+
 		tmp = list_entry(it, struct ipsec_ctx_tmp, list);
+		LM_DBG("Context %p (state %d) expire at %u, current ticks %u\n",
+				tmp->ctx, tmp->ctx->state, (unsigned int)tmp->expire, ticks);
 		if (ticks < tmp->expire)
 			break; /* finished */
-		prev = it;
-		IPSEC_CTX_UNREF(tmp->ctx);
 		LM_DBG("IPSec ctx %p removing\n", tmp->ctx);
+		prev = it;
+	}
+	if (!prev) {
+		LM_DBG("No expired contexts found\n");
+		lock_release(ipsec_tmp_contexts_lock);
+		return; /* nothing to do */
 	}
 	/* unlink from the shared list */
 	if (prev)
 		list_cut_position(&new, ipsec_tmp_contexts, prev);
+	LM_DBG("Unlinked %d expired contexts\n", list_size(&new));
 	lock_release(ipsec_tmp_contexts_lock);
 
 	list_for_each_safe(it, safe, &new) {
 		tmp = list_entry(it, struct ipsec_ctx_tmp, list);
-		lock_get(&tmp->ctx->lock);
-		if (tmp->ctx->state == IPSEC_STATE_TMP) {
-			tmp->ctx->state = IPSEC_STATE_INVALID;
-			LM_DBG("IPSec ctx %p expired\n", tmp->ctx);
+		LM_DBG("Context %p (state %d) Refcount %d\n",
+				tmp->ctx, tmp->ctx->state, tmp->ctx->ref);
+		if (VALID_IPSEC_STATE(tmp->ctx->state)) {
+			lock_get(&tmp->ctx->lock);
+			if (tmp->ctx->state == IPSEC_STATE_TMP) {
+				tmp->ctx->state = IPSEC_STATE_INVALID;
+				LM_DBG("IPSec ctx %p expired\n", tmp->ctx);
+			}
+			list_del(&tmp->list);
+			ctx = tmp->ctx;
+			free = IPSEC_CTX_UNREF_UNSAFE(tmp->ctx);
+			lock_release(&tmp->ctx->lock);
+			shm_free(tmp);
+			if (free)
+				ipsec_ctx_free(ctx);
+		} else {
+			/* already torn down elsewhere; just drop the timer entry */
+			LM_DBG("IPSec ctx %p already released\n", tmp->ctx);
+			list_del(&tmp->list);
+			shm_free(tmp);
 		}
-		list_del(&tmp->list);
-		ctx = tmp->ctx;
-		free = IPSEC_CTX_UNREF_UNSAFE(tmp->ctx);
-		lock_release(&tmp->ctx->lock);
-		shm_free(tmp);
-		if (free)
-			ipsec_ctx_free(ctx);
 	}
 }
 
 void ipsec_ctx_remove_tmp(struct ipsec_ctx *ctx)
+{
+	return ipsec_ctx_remove_free_tmp(ctx, 1);
+}
+
+void ipsec_ctx_remove_free_tmp(struct ipsec_ctx *ctx, int _free)
 {
 	struct list_head *it, *safe;
 	struct ipsec_ctx_tmp *tmp;
@@ -911,7 +984,8 @@ void ipsec_ctx_remove_tmp(struct ipsec_ctx *ctx)
 		if (tmp->ctx != ctx)
 			continue;
 		list_del(&tmp->list);
-		free = IPSEC_CTX_UNREF_UNSAFE(tmp->ctx);
+		if (_free)
+			free = IPSEC_CTX_UNREF_UNSAFE(tmp->ctx);
 		shm_free(tmp);
 		break;
 	}

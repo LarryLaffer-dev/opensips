@@ -434,8 +434,12 @@ struct ipsec_ctx *ipsec_get_ctx_user(struct ipsec_user *user, struct receive_inf
 	lock_get(&user->lock);
 	list_for_each(it, &user->sas) {
 		ctx = list_entry(it, struct ipsec_ctx, list);
-		if (ctx->ue.port_c == ri->src_port && ctx->me.port_s == ri->dst_port)
-			break;
+		LM_DBG("checking ctx %p (state %d) for src_port %u, dst_port %u\n", ctx, ctx->state, ri->src_port, ri->dst_port);
+		if (VALID_IPSEC_STATE(ctx->state)) {
+			LM_DBG("ctx %p is valid, state %d\n", ctx, ctx->state);
+			if (ctx->ue.port_c == ri->src_port && ctx->me.port_s == ri->dst_port)
+				break;
+		}
 		ctx = NULL;
 	}
 	lock_release(&user->lock);
@@ -446,14 +450,25 @@ struct ipsec_ctx *ipsec_get_ctx_user_port(struct ipsec_user *user, unsigned shor
 {
 	struct list_head *it;
 	struct ipsec_ctx *ctx = NULL;
+	struct ipsec_ctx *tmp_ctx = NULL;
 	lock_get(&user->lock);
 	list_for_each(it, &user->sas) {
 		ctx = list_entry(it, struct ipsec_ctx, list);
-		if (ctx->ue.port_s == port || ctx->ue.port_c)
-			break;
+		LM_DBG("checking ctx %p for port %u\n", ctx, port);
+		if (ctx->ue.port_s == port || ctx->ue.port_c) {
+			if (ctx->state == IPSEC_STATE_TMP) {
+				tmp_ctx = ctx;
+			}
+			if (ctx->state == IPSEC_STATE_OK)
+				break;
+		}
 		ctx = NULL;
 	}
 	lock_release(&user->lock);
+	if (!ctx && tmp_ctx) {
+		/* Just found a temporary context, not an "OK" context, return temporary context */
+		return tmp_ctx;
+	}
 	return ctx;
 }
 
