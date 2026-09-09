@@ -42,6 +42,9 @@
  * - gen_lock_t* lock_init(gen_lock_t* lock); - inits the lock
  * - void    lock_destroy(gen_lock_t* lock);  - removes the lock (e.g sysv rmid)
  * - void    lock_get(gen_lock_t* lock);      - lock (mutex down)
+ * - int     lock_try(gen_lock_t* lock);      - lock without blocking; returns
+ *                                              0 if acquired, -1 if the lock
+ *                                              is currently held elsewhere
  * - void    lock_release(gen_lock_t* lock);  - unlock (mutex up)
  *
  * lock sets: [implemented only for FL & SYSV so far]
@@ -91,8 +94,10 @@ inline static gen_lock_t* lock_init(gen_lock_t* lock)
 
 #ifndef DBG_LOCK
 	#define lock_get(lock) get_lock(lock)
+	#define lock_try(lock) try_get_lock(lock)
 #else
 	#define lock_get(lock) get_lock(lock, __FILE__, __FUNCTION__, __LINE__)
+	#define lock_try(lock) try_get_lock(lock, __FILE__, __FUNCTION__, __LINE__)
 #endif
 
 #elif defined USE_PTHREAD_MUTEX
@@ -127,6 +132,7 @@ inline static gen_lock_t* lock_init(gen_lock_t* lock)
 
 #define lock_destroy(lock) pthread_mutex_destroy(lock)
 #define lock_get(lock) pthread_mutex_lock(lock)
+#define lock_try(lock) (pthread_mutex_trylock(lock)==0?0:-1)
 #define lock_release(lock) pthread_mutex_unlock(lock)
 
 #elif defined USE_UMUTEX
@@ -177,6 +183,13 @@ lock_release(gen_lock_t *lock)
     return (_umtx_op_err(lock, UMTX_OP_MUTEX_UNLOCK, 0, 0, 0));
 }
 
+inline static int
+lock_try(gen_lock_t *lock)
+{
+
+    return (_umtx_op_err(lock, UMTX_OP_MUTEX_TRYLOCK, 0, 0, 0)==0?0:-1);
+}
+
 # endif /* USE_UMUTEX_DECL */
 #elif defined USE_POSIX_SEM
 #include <semaphore.h>
@@ -193,6 +206,7 @@ inline static gen_lock_t* lock_init(gen_lock_t* lock)
 }
 
 #define lock_get(lock) sem_wait(lock)
+#define lock_try(lock) sem_trywait(lock)
 #define lock_release(lock) sem_post(lock)
 
 #elif defined USE_SYSV_SEM
@@ -269,6 +283,28 @@ tryagain:
 		}
 	}
 
+}
+
+inline static int lock_try(gen_lock_t* lock)
+{
+	struct sembuf sop;
+
+	sop.sem_num=0;
+	sop.sem_op=-1; /* down */
+	sop.sem_flg=IPC_NOWAIT;
+tryagain:
+	if (semop(*lock, &sop, 1)==-1){
+		if (errno==EINTR){
+			LM_DBG("signal received while trying a mutex\n");
+			goto tryagain;
+		}else if (errno==EAGAIN){
+			return -1; /* already held */
+		}else{
+			LM_CRIT("%s (%d)\n", strerror(errno), errno);
+			return -1;
+		}
+	}
+	return 0;
 }
 
 inline static void lock_release(gen_lock_t* lock)
