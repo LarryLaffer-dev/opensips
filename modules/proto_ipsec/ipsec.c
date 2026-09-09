@@ -21,6 +21,7 @@
 
 #define _ISOC11_SOURCE /* fix static_assert on older OSes */
 #include <assert.h>
+#include <net/if.h>
 
 #include "ipsec.h"
 #include "ipsec_user.h"
@@ -392,8 +393,32 @@ struct xfrm_algo_osips {
 static_assert(sizeof(struct xfrm_algo_osips) == sizeof(struct xfrm_algo)
 		+ IPSEC_ALGO_MAX_KEY_SIZE, "ERROR!  Unexpected 'xfrm_algo' size!");
 
-int ipsec_sa_add(struct mnl_socket *sock, struct ipsec_ctx *ctx,
-		enum ipsec_dir dir, int client)
+/* the index of the interface ESP processing is offloaded to, 0 if disabled */
+int ipsec_hw_offload_ifindex;
+
+int ipsec_hw_offload_init(const char *ifname)
+{
+	unsigned int ifindex;
+
+	if (!ifname || !ifname[0]) {
+		ipsec_hw_offload_ifindex = 0;
+		return 0;
+	}
+
+	ifindex = if_nametoindex(ifname);
+	if (ifindex == 0) {
+		LM_ERR("hardware offload interface %s not found: %s\n",
+				ifname, strerror(errno));
+		return -1;
+	}
+
+	ipsec_hw_offload_ifindex = ifindex;
+	LM_INFO("offloading ESP processing to %s (index %u)\n", ifname, ifindex);
+	return 0;
+}
+
+static int _ipsec_sa_add(struct mnl_socket *sock, struct ipsec_ctx *ctx,
+		enum ipsec_dir dir, int client, int offloaded)
 {
 	char buf[MNL_SOCKET_BUFFER_SIZE];
 	struct nlmsghdr *nlh;
@@ -401,6 +426,7 @@ int ipsec_sa_add(struct mnl_socket *sock, struct ipsec_ctx *ctx,
 	struct xfrm_userpolicy_info *policy_info;
 	struct xfrm_algo_osips ia, ie;
 	struct xfrm_user_tmpl tmpl;
+	struct xfrm_user_offload offload;
 	unsigned short dst_port;
 	unsigned short src_port;
 	unsigned int spi;
@@ -517,6 +543,19 @@ int ipsec_sa_add(struct mnl_socket *sock, struct ipsec_ctx *ctx,
 	mnl_attr_put(nlh, XFRMA_ALG_CRYPT,
 			sizeof(struct xfrm_algo) + ie.alg_key_len, &ie);
 
+	if (offloaded) {
+		/* crypto offload: the NIC does the ESP transform, the kernel keeps
+		 * doing the encapsulation.  Packet offload would need a 6.2 kernel
+		 * and far more specific hardware */
+		memset(&offload, 0, sizeof(offload));
+		offload.ifindex = ipsec_hw_offload_ifindex;
+		if (dir == IPSEC_POLICY_IN)
+			offload.flags |= XFRM_OFFLOAD_INBOUND;
+		if (dst->ip.af == AF_INET6)
+			offload.flags |= XFRM_OFFLOAD_IPV6;
+		mnl_attr_put(nlh, XFRMA_OFFLOAD_DEV, sizeof(offload), &offload);
+	}
+
 	if (mnl_socket_sendto(sock, nlh, nlh->nlmsg_len) < 0) {
 		LM_ERR("communicating with kernel for new SA: %s\n", strerror(errno));
 		goto error;
@@ -574,15 +613,33 @@ int ipsec_sa_add(struct mnl_socket *sock, struct ipsec_ctx *ctx,
 		goto policy_error;
 	}
 
-	LM_DBG("created %s:%hu -> %s:%hu SA (SPI %u)\n",
-			ip_addr2a(&src->ip), src_port, ip_addr2a(&dst->ip), dst_port, spi);
+	LM_DBG("created %s:%hu -> %s:%hu SA (SPI %u)%s\n",
+			ip_addr2a(&src->ip), src_port, ip_addr2a(&dst->ip), dst_port, spi,
+			offloaded ? " offloaded" : "");
 	return 0;
 policy_error:
 	ipsec_sa_rm(sock, ctx, dir, client);
 error:
-	LM_ERR("failed to create %s:%hu -> %s:%hu SA (SPI %u)\n",
-			ip_addr2a(&src->ip), src_port, ip_addr2a(&dst->ip), dst_port, spi);
+	if (!offloaded)
+		LM_ERR("failed to create %s:%hu -> %s:%hu SA (SPI %u)\n",
+				ip_addr2a(&src->ip), src_port,
+				ip_addr2a(&dst->ip), dst_port, spi);
 	return -1;
+}
+
+int ipsec_sa_add(struct mnl_socket *sock, struct ipsec_ctx *ctx,
+		enum ipsec_dir dir, int client)
+{
+	if (ipsec_hw_offload_ifindex > 0) {
+		if (_ipsec_sa_add(sock, ctx, dir, client, 1) == 0)
+			return 0;
+		/* the NIC may not support offload at all, or simply be out of
+		 * offload slots - either way software ESP still works */
+		LM_WARN("could not offload SA to interface %d, "
+				"falling back to software\n", ipsec_hw_offload_ifindex);
+	}
+
+	return _ipsec_sa_add(sock, ctx, dir, client, 0);
 }
 
 /*

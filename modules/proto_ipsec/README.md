@@ -282,6 +282,37 @@ modparam("proto_ipsec", "disable_deprecated_algorithms", yes)
 ```
 
 
+#### hw_offload_interface (string)
+
+
+Name of the network interface to which ESP encryption and decryption
+should be offloaded.
+
+On a NIC with an inline IPsec engine -- NVIDIA ConnectX-6 Dx and later,
+Intel QuickAssist, Marvell OCTEON and similar -- the transform runs on
+the card instead of the CPU, which is what limits the number of
+concurrent registrations on a busy P-CSCF.
+
+Offload is requested per security association. If the kernel refuses
+it, because the driver does not support offload or the card has run out
+of offload slots, the association is created again without it and
+processing continues in software, so enabling this on unsuitable
+hardware costs a warning per association and nothing else. An interface
+name that cannot be resolved at all is a startup error.
+
+Requires a kernel with `CONFIG_XFRM_OFFLOAD`.
+
+
+*Default value is empty - ESP is processed in software.*
+
+
+```opensips title="Set hw_offload_interface parameter"
+...
+modparam("proto_ipsec", "hw_offload_interface", "eth0")
+...
+```
+
+
 ### Exported Functions
 
 

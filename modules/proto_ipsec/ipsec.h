@@ -104,6 +104,8 @@ extern int ipsec_tmp_timeout;
 
 int ipsec_init(void);
 void ipsec_destroy(void);
+int ipsec_hw_offload_init(const char *ifname);
+extern int ipsec_hw_offload_ifindex;
 struct ipsec_socket *ipsec_sock_new(void);
 void ipsec_sock_close(struct ipsec_socket *sock);
 int ipsec_sa_add(struct ipsec_socket *sock, struct ipsec_ctx *ctx,

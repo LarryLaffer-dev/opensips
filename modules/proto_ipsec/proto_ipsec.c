@@ -58,6 +58,7 @@ static usrloc_api_t ul_ipsec;
 static int ipsec_ctx_tm_idx = -1;
 
 static int ipsec_port = IPSEC_DEFAULT_PORT;
+static char *ipsec_hw_offload_interface;
 static int mod_init(void);
 static void mod_destroy(void);
 static int proto_ipsec_init(struct proto_info *pi);
@@ -104,6 +105,7 @@ static const param_export_t params[] = {
 	{ "default_server_port",			INT_PARAM, &ipsec_default_server_port },
 	{ "allowed_algorithms",				STR_PARAM, &ipsec_allowed_algorithms.s },
 	{ "disable_deprecated_algorithms",	INT_PARAM, &ipsec_disable_deprecated_algorithms },
+	{ "hw_offload_interface",			STR_PARAM, &ipsec_hw_offload_interface },
 	{0, 0, 0}
 };
 
@@ -232,6 +234,12 @@ static void ipsec_handle_register_req(struct cell* t, int type, struct tmcb_para
 static int mod_init(void)
 {
 	LM_INFO("initializing IPSec protocols\n");
+
+	/* a NIC that cannot offload is not a reason to refuse to start -
+	 * an interface name we cannot resolve is */
+	if (ipsec_hw_offload_init(ipsec_hw_offload_interface) < 0)
+		return -1;
+
 	if (ipsec_tmp_timeout <= 0) {
 		LM_ERR("invalid temporary timeout value %d - positive value required\n",
 				ipsec_tmp_timeout);
