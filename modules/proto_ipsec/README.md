@@ -302,6 +302,11 @@ Leaving this off is the safe default: it changes nothing for UEs on a
 public address, and a UE that cannot reach the network without NAT
 traversal will not have worked before either.
 
+Enabling this requires the IPSec listener to be declared with
+`reuse_port`. UDP-encapsulated ESP is decapsulated by a dedicated
+socket bound to the same port as the SIP listener, which only works
+if both were opened with `SO_REUSEPORT`.
+
 
 *Default value is 0 (disabled).*
 

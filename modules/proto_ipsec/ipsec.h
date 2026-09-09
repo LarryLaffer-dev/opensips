@@ -131,4 +131,15 @@ int ipsec_ctx_release_unsafe(struct ipsec_ctx *ctx);
 void ipsec_ctx_remove_tmp(struct ipsec_ctx *ctx);
 void ipsec_ctx_extend_tmp(struct ipsec_ctx *ctx);
 
+/* a UDP socket with UDP_ENCAP set, one per local IP:port */
+struct ipsec_encap_socket {
+	int fd;
+	struct ip_addr ip;
+	unsigned short port;
+	struct ipsec_encap_socket *next;
+};
+
+int ipsec_encap_get_socket(struct ip_addr *ip, unsigned short port);
+void ipsec_encap_destroy(void);
+
 #endif /* _IPSEC_H_ */

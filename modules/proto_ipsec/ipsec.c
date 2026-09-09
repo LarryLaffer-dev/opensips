@@ -19,8 +19,21 @@
  *
  */
 
-#define _ISOC11_SOURCE /* fix static_assert on older OSes */
+/* _GNU_SOURCE implies _ISOC11_SOURCE, which static_assert needs on older
+ * OSes, and additionally exposes SO_REUSEPORT */
+#define _GNU_SOURCE
 #include <assert.h>
+#include <unistd.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+
+/* <linux/udp.h> cannot be included alongside <netinet/udp.h> */
+#ifndef UDP_ENCAP
+#define UDP_ENCAP 100
+#endif
+#ifndef UDP_ENCAP_ESPINUDP
+#define UDP_ENCAP_ESPINUDP 2	/* RFC 3948 */
+#endif
 
 #include "ipsec.h"
 #include "ipsec_user.h"
@@ -269,6 +282,116 @@ void ipsec_destroy(void)
 	if (ipsec_spi_lock)
 		lock_destroy(ipsec_spi_lock);
 	shm_free(ipsec_spi_map);
+	ipsec_encap_destroy();
+}
+
+/*
+ * NAT-T UDP encapsulation sockets.
+ *
+ * XFRMA_ENCAP tells the kernel how ESP packets are framed, but the actual
+ * decapsulation is driven by a UDP socket carrying the UDP_ENCAP option.
+ * We therefore keep one such socket per local IP:port for which we have
+ * installed a UDP-enc-tun association.
+ *
+ * The list is process-local: file descriptors are not shareable, so each
+ * worker that installs an encapsulated association opens its own socket.
+ * Sharing the port with the SIP listener requires SO_REUSEPORT on both,
+ * so the ipsec listener has to be declared with 'reuse_port'.
+ */
+
+static struct ipsec_encap_socket *ipsec_encap_sockets;
+
+void ipsec_encap_destroy(void)
+{
+	struct ipsec_encap_socket *es, *next;
+
+	for (es = ipsec_encap_sockets; es; es = next) {
+		next = es->next;
+		close(es->fd);
+		pkg_free(es);
+	}
+	ipsec_encap_sockets = NULL;
+}
+
+static int ipsec_encap_create_socket(struct ip_addr *ip, unsigned short port)
+{
+	int fd, opt;
+	union sockaddr_union su;
+
+	if (init_su(&su, ip, port) < 0) {
+		LM_ERR("could not build address for %s:%hu\n", ip_addr2a(ip), port);
+		return -1;
+	}
+
+	fd = socket(ip->af, SOCK_DGRAM, IPPROTO_UDP);
+	if (fd < 0) {
+		LM_ERR("could not create encapsulation socket: %s\n", strerror(errno));
+		return -1;
+	}
+
+	opt = 1;
+	if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0)
+		LM_WARN("could not set SO_REUSEADDR: %s\n", strerror(errno));
+
+	/* mandatory: the SIP listener already holds this port */
+	opt = 1;
+	if (setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt)) < 0) {
+		LM_ERR("could not set SO_REUSEPORT: %s\n", strerror(errno));
+		goto error;
+	}
+
+	if (bind(fd, &su.s, sockaddru_len(su)) < 0) {
+		LM_ERR("could not bind encapsulation socket to %s:%hu: %s\n",
+				ip_addr2a(ip), port, strerror(errno));
+		if (errno == EADDRINUSE)
+			LM_ERR("the SIP listener holding this port was not opened with "
+					"SO_REUSEPORT - add 'reuse_port' to the ipsec listener\n");
+		goto error;
+	}
+
+	opt = UDP_ENCAP_ESPINUDP;
+	if (setsockopt(fd, IPPROTO_UDP, UDP_ENCAP, &opt, sizeof(opt)) < 0) {
+		LM_ERR("could not set UDP_ENCAP on %s:%hu: %s - does this kernel "
+				"support IPSec NAT traversal?\n",
+				ip_addr2a(ip), port, strerror(errno));
+		goto error;
+	}
+
+	LM_DBG("opened encapsulation socket %d for %s:%hu\n",
+			fd, ip_addr2a(ip), port);
+	return fd;
+
+error:
+	close(fd);
+	return -1;
+}
+
+int ipsec_encap_get_socket(struct ip_addr *ip, unsigned short port)
+{
+	struct ipsec_encap_socket *es;
+	int fd;
+
+	for (es = ipsec_encap_sockets; es; es = es->next)
+		if (es->port == port && ip_addr_cmp(&es->ip, ip))
+			return es->fd;
+
+	fd = ipsec_encap_create_socket(ip, port);
+	if (fd < 0)
+		return -1;
+
+	es = pkg_malloc(sizeof *es);
+	if (!es) {
+		LM_ERR("oom for encapsulation socket\n");
+		close(fd);
+		return -1;
+	}
+	es->fd = fd;
+	es->ip = *ip;
+	es->port = port;
+	es->next = ipsec_encap_sockets;
+	ipsec_encap_sockets = es;
+
+	return fd;
 }
 
 /*
@@ -391,11 +514,6 @@ struct xfrm_algo_osips {
 };
 static_assert(sizeof(struct xfrm_algo_osips) == sizeof(struct xfrm_algo)
 		+ IPSEC_ALGO_MAX_KEY_SIZE, "ERROR!  Unexpected 'xfrm_algo' size!");
-
-/* not exported by all libc versions - RFC 3948 */
-#ifndef UDP_ENCAP_ESPINUDP
-#define UDP_ENCAP_ESPINUDP 2
-#endif
 
 int ipsec_sa_add(struct mnl_socket *sock, struct ipsec_ctx *ctx,
 		enum ipsec_dir dir, int client)
@@ -535,6 +653,15 @@ int ipsec_sa_add(struct mnl_socket *sock, struct ipsec_ctx *ctx,
 			sizeof(struct xfrm_algo) + ie.alg_key_len, &ie);
 
 	if (ctx->mode == IPSEC_MODE_UDP_ENCAP_TUNNEL) {
+		/* the XFRMA_ENCAP attribute alone only tells the kernel how the
+		 * packets are framed - decapsulation happens on a UDP socket
+		 * that has UDP_ENCAP set, so we need one bound to our port */
+		if (ipsec_encap_get_socket(&dst->ip, dst_port) < 0) {
+			LM_ERR("could not open encapsulation socket for %s:%hu\n",
+					ip_addr2a(&dst->ip), dst_port);
+			goto error;
+		}
+
 		/* encap_oa stays zero: we never send the original-address
 		 * payload, so the kernel has nothing to match against */
 		memset(&encap, 0, sizeof(encap));
