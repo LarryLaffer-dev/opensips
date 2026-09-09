@@ -282,6 +282,37 @@ modparam("proto_ipsec", "disable_deprecated_algorithms", yes)
 ```
 
 
+#### nat_traversal (integer)
+
+
+Indicates whether the *UDP-enc-tun* mode described in 3GPP TS 33.203
+Annex M may be negotiated in addition to the mandatory *trans* mode.
+
+A UE behind a NAT cannot use plain transport-mode ESP, because the NAT
+rewrites the addresses the integrity check covers. *UDP-enc-tun* wraps
+the ESP payload in UDP (RFC 3948) and switches the security association
+to tunnel mode, which survives the translation.
+
+When disabled, a *UDP-enc-tun* offer in the Security-Client header is
+ignored and the UE has to fall back to *trans*, or fail. When enabled,
+the mode the UE offered is echoed back in Security-Server and reflected
+in [$ipsec(mode)](#ipsec).
+
+Leaving this off is the safe default: it changes nothing for UEs on a
+public address, and a UE that cannot reach the network without NAT
+traversal will not have worked before either.
+
+
+*Default value is 0 (disabled).*
+
+
+```opensips title="Set nat_traversal parameter"
+...
+modparam("proto_ipsec", "nat_traversal", 1)
+...
+```
+
+
 ### Exported Functions
 
 
@@ -365,6 +396,8 @@ chosen for receiving messages through the server channel.
 chosen for communicating through the client channel.
 - *port-c* - local port
 chosen for communicating through the server channel.
+- *mode* - the negotiated
+sec-agree mode, either *trans* or *UDP-enc-tun*.
 
 
 ```opensips title="$ipsec(field) usage"

@@ -73,6 +73,35 @@
 #define IPSEC_ALGO_MAX_KEY_SIZE IPSEC_ALGO_DES3_KEY_SIZE
 
 int ipsec_disable_deprecated_algorithms = 0;
+int ipsec_nat_traversal = 0;
+
+/*
+ * Resolves the sec-agree "mod" parameter to an ipsec_mode.  An absent
+ * parameter means transport mode, as that is the only mode 3GPP TS 33.203
+ * mandates.  Returns -1 for a mode we cannot honour.
+ */
+int ipsec_parse_mode(str *mod)
+{
+	static str trans = str_init("trans");
+	static str udp_enc_tun = str_init("UDP-enc-tun");
+
+	if (!mod || !mod->len)
+		return IPSEC_MODE_TRANSPORT;
+
+	if (str_casematch(mod, &trans))
+		return IPSEC_MODE_TRANSPORT;
+
+	if (str_casematch(mod, &udp_enc_tun)) {
+		if (!ipsec_nat_traversal) {
+			LM_DBG("UDP-enc-tun requested, but nat_traversal is disabled\n");
+			return -1;
+		}
+		return IPSEC_MODE_UDP_ENCAP_TUNNEL;
+	}
+
+	LM_DBG("unsupported IPSec mode %.*s\n", mod->len, mod->s);
+	return -1;
+}
 
 static struct ipsec_algorithm_desc ipsec_auth_algorithms[] = {
 	{
@@ -286,7 +315,8 @@ sec_agree_body_t *ipsec_get_security_client(struct sip_msg *msg, struct ipsec_al
 			for (sa = sas; sa; sa = sa->next) {
 				if (sa->invalid || sa->mechanism != SEC_AGREE_MECHANISM_IPSEC_3GPP)
 					continue;
-				/* TODO: should we check mode for now? */
+				if (ipsec_parse_mode(&sa->ts3gpp.mod_str) < 0)
+					continue;
 				if (!sa->ts3gpp.alg_str.len)
 					continue;
 				alg_desc = ipsec_parse_algorithm(&sa->ts3gpp.alg_str, IPSEC_ALGO_TYPE_AUTH);
@@ -334,7 +364,8 @@ sec_agree_body_t *ipsec_get_security_client(struct sip_msg *msg, struct ipsec_al
 				for (sa = sas; sa; sa = sa->next) {
 					if (sa->invalid || sa->mechanism != SEC_AGREE_MECHANISM_IPSEC_3GPP)
 						continue;
-					/* TODO: should we check mode for now? */
+					if (ipsec_parse_mode(&sa->ts3gpp.mod_str) < 0)
+						continue;
 					if (!sa->ts3gpp.alg_str.len)
 						continue;
 					auth = ipsec_parse_algorithm(&sa->ts3gpp.alg_str, IPSEC_ALGO_TYPE_AUTH);

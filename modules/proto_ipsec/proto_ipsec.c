@@ -104,6 +104,7 @@ static const param_export_t params[] = {
 	{ "default_server_port",			INT_PARAM, &ipsec_default_server_port },
 	{ "allowed_algorithms",				STR_PARAM, &ipsec_allowed_algorithms.s },
 	{ "disable_deprecated_algorithms",	INT_PARAM, &ipsec_disable_deprecated_algorithms },
+	{ "nat_traversal",					INT_PARAM, &ipsec_nat_traversal },
 	{0, 0, 0}
 };
 
@@ -536,7 +537,10 @@ static int ipsec_add_security_server(struct sip_msg *msg, struct ipsec_ctx *ctx)
 	struct lump* anchor;
 	char *h, *p;
 	str tmp;
-	str hdr1 = str_init("Supported: sec-agree\r\nSecurity-Server: ipsec-3gpp;q=0.1;prot=esp;mod=trans;spi-s=");
+	/* the negotiated mode has to be echoed back in the Security-Server */
+	str hdr1_trans = str_init("Supported: sec-agree\r\nSecurity-Server: ipsec-3gpp;q=0.1;prot=esp;mod=trans;spi-s=");
+	str hdr1_natt = str_init("Supported: sec-agree\r\nSecurity-Server: ipsec-3gpp;q=0.1;prot=esp;mod=UDP-enc-tun;spi-s=");
+	str *hdr1;
 	str hdr2 = str_init(";spi-c=");
 	str hdr3 = str_init(";port-s=");
 	str hdr4 = str_init(";port-c=");
@@ -545,10 +549,12 @@ static int ipsec_add_security_server(struct sip_msg *msg, struct ipsec_ctx *ctx)
 	str hdr7 = str_init("\r\n");
 	int alg_len, ealg_len;
 
+	hdr1 = (ctx->mode == IPSEC_MODE_UDP_ENCAP_TUNNEL ? &hdr1_natt : &hdr1_trans);
+
 	alg_len = strlen(ctx->alg->name);
 	ealg_len = strlen(ctx->ealg->name);
 
-	h = pkg_malloc(hdr1.len + 5 /* max port */ + hdr2.len + 5 +
+	h = pkg_malloc(hdr1->len + 5 /* max port */ + hdr2.len + 5 +
 			hdr3.len + INT2STR_MAX_LEN /* spi */ + hdr4.len + INT2STR_MAX_LEN +
 			hdr5.len + alg_len + hdr6.len + strlen(ctx->ealg->name) + ealg_len);
 	if (!h) {
@@ -556,8 +562,8 @@ static int ipsec_add_security_server(struct sip_msg *msg, struct ipsec_ctx *ctx)
 		return -1;
 	}
 	p = h;
-	memcpy(p, hdr1.s, hdr1.len);
-	p += hdr1.len;
+	memcpy(p, hdr1->s, hdr1->len);
+	p += hdr1->len;
 	tmp.s = int2str(ctx->me.spi_s, &tmp.len);
 	memcpy(p, tmp.s, tmp.len);
 	p += tmp.len;
@@ -660,6 +666,7 @@ static int w_ipsec_create(struct sip_msg *msg, int *_port_ps, int *_port_pc,
 	struct ipsec_user *user;
 	auth_body_t *a = NULL;
 	str *impu, *impi;
+	int mode;
 	int ret = -1;
 	unsigned short prev_port_pc = 0;
 
@@ -783,8 +790,15 @@ static int w_ipsec_create(struct sip_msg *msg, int *_port_ps, int *_port_pc,
 		goto release_user;
 	}
 
+	mode = ipsec_parse_mode(&sa->ts3gpp.mod_str);
+	if (mode < 0) {
+		LM_ERR("unsupported IPSec mode in Security-Client\n");
+		ret = -2;
+		goto release_user;
+	}
+
 	ret = -5;
-	ctx = ipsec_ctx_new(sa, &req->rcv.src_ip, ss, sc, &auth->ck, &auth->ik, 0, 0);
+	ctx = ipsec_ctx_new(sa, &req->rcv.src_ip, ss, sc, &auth->ck, &auth->ik, 0, 0, mode);
 	if (!ctx) {
 		LM_ERR("could not allocate new IPSec ctx\n");
 		goto release_user;
@@ -844,6 +858,7 @@ str pv_ipsec_ctx_type[] = {
 	str_init("port-s"),  /* 6 */
 	str_init("ik"),      /* 7 */
 	str_init("ck"),      /* 8 */
+	str_init("mode"),    /* 9 */
 };
 
 static int pv_parse_ipsec_ctx_flag(str *name)
@@ -944,6 +959,10 @@ static int pv_get_ipsec_ctx(struct sip_msg *msg, pv_param_t *param,
 		break;
 	case 8: /* ck */
 		res->rs = ctx->ck;
+		break;
+	case 9: /* mode */
+		res->rs = (ctx->mode == IPSEC_MODE_UDP_ENCAP_TUNNEL ?
+				str_init("UDP-enc-tun") : str_init("trans"));
 		break;
 	default:
 		LM_BUG("invalid name %d\n", name);
@@ -1207,6 +1226,7 @@ static str ipsec_usrloc_spi_us = str_init("ipsec.spi_us");
 static str ipsec_usrloc_port_pc = str_init("ipsec.port_pc");
 static str ipsec_usrloc_port_uc = str_init("ipsec.port_uc");
 static str ipsec_usrloc_port_us = str_init("ipsec.port_us");
+static str ipsec_usrloc_mode = str_init("ipsec.mode");
 
 #define UL_GET_S_RET(_c, _s, _d, _e) \
 	({ \
@@ -1278,11 +1298,13 @@ static void ipsec_usrloc_restore(ucontact_t *contact)
 {
 	str ck, ik;
 	int spi_pc, spi_ps, port_pc;
+	enum ipsec_mode mode;
 	sec_agree_body_t sa;
 	struct socket_info *sc, *ss;
 	struct ipsec_user *user;
 	struct ipsec_socket *sock;
 	struct ipsec_ctx *ctx;
+	int_str_t *mode_val;
 	LM_DBG("restoring IPSec context for %.*s (%.*s)\n",
 			contact->aor->len, contact->aor->s,
 			contact->c.len, contact->c.s);
@@ -1297,7 +1319,19 @@ static void ipsec_usrloc_restore(ucontact_t *contact)
 	ik = UL_GET_S(contact, ipsec_usrloc_ik, "IK");
 	sa.ts3gpp.alg_str = UL_GET_S(contact, ipsec_usrloc_alg, "ALG");
 	sa.ts3gpp.prot_str = str_init("esp");
-	sa.ts3gpp.mod_str = str_init("trans");
+
+	/* contacts stored before UDP-enc-tun support, or stored while it was
+	 * enabled and reloaded after it was turned off, fall back to transport */
+	mode_val = ul_ipsec.get_ucontact_key(contact, &ipsec_usrloc_mode);
+	if (mode_val && !mode_val->is_str && ipsec_nat_traversal &&
+			mode_val->i == IPSEC_MODE_UDP_ENCAP_TUNNEL) {
+		mode = IPSEC_MODE_UDP_ENCAP_TUNNEL;
+		sa.ts3gpp.mod_str = str_init("UDP-enc-tun");
+	} else {
+		mode = IPSEC_MODE_TRANSPORT;
+		sa.ts3gpp.mod_str = str_init("trans");
+	}
+
 	sa.ts3gpp.ealg_str = UL_GET_S(contact, ipsec_usrloc_ealg, "EALG");
 	spi_pc = UL_GET_I(contact, ipsec_usrloc_spi_pc, "SPI-PC");
 	spi_ps = UL_GET_I(contact, ipsec_usrloc_spi_ps, "SPI-PS");
@@ -1321,7 +1355,7 @@ static void ipsec_usrloc_restore(ucontact_t *contact)
 		return;
 	}
 
-	ctx = ipsec_ctx_new(&sa, &user->ip, ss, sc, &ck, &ik, spi_pc, spi_ps);
+	ctx = ipsec_ctx_new(&sa, &user->ip, ss, sc, &ck, &ik, spi_pc, spi_ps, mode);
 	if (!ctx) {
 		LM_ERR("could not allocate new IPSec ctx\n");
 		goto release_user;
@@ -1389,6 +1423,7 @@ static void ipsec_usrloc_insert(ucontact_t *contact)
 	ul_ipsec.put_ucontact_key(contact, &ipsec_usrloc_port_pc, INT_STR_I(ctx->me.port_c));
 	ul_ipsec.put_ucontact_key(contact, &ipsec_usrloc_port_uc, INT_STR_I(ctx->ue.port_c));
 	ul_ipsec.put_ucontact_key(contact, &ipsec_usrloc_port_us, INT_STR_I(ctx->ue.port_s));
+	ul_ipsec.put_ucontact_key(contact, &ipsec_usrloc_mode, INT_STR_I((int)ctx->mode));
 	
 	/* all good mark the SA as OK */
 	lock_get(&ctx->lock);

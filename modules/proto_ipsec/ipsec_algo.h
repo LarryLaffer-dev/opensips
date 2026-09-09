@@ -87,12 +87,20 @@ enum ipsec_algo_type {
 	IPSEC_ALGO_TYPE_ENC,
 };
 
+/* the "mod" parameter of the sec-agree mechanism, 3GPP TS 33.203 Annex H/M */
+enum ipsec_mode {
+	IPSEC_MODE_TRANSPORT = 0,	/* mod=trans */
+	IPSEC_MODE_UDP_ENCAP_TUNNEL,	/* mod=UDP-enc-tun */
+};
+
 int ipsec_add_allowed_algorithms(str *algs);
 struct ipsec_algorithm_desc *ipsec_parse_algorithm(str *name, enum ipsec_algo_type type);
 struct ipsec_allowed_algo *ipsec_parse_allowed_algorithms(str *algs);
 sec_agree_body_t *ipsec_get_security_client(struct sip_msg *msg, struct ipsec_allowed_algo *algos);
 void ipsec_free_allowed_algorithms(struct ipsec_allowed_algo *algos);
+int ipsec_parse_mode(str *mod);
 
 extern int ipsec_disable_deprecated_algorithms;
+extern int ipsec_nat_traversal;
 
 #endif /* _IPSEC_ALGO_H_ */

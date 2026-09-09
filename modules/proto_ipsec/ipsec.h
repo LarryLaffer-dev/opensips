@@ -44,6 +44,7 @@ enum ipsec_state {
 
 #define ipsec_socket mnl_socket
 
+#include "ipsec_algo.h"
 #include "../../str.h"
 #include "../../socket_info.h"
 #include "../../lib/list.h"
@@ -63,6 +64,7 @@ struct ipsec_ctx {
 	struct ipsec_algorithm_desc *alg, *ealg;
 	struct ipsec_endpoint me;
 	struct ipsec_endpoint ue;
+	enum ipsec_mode mode;
 
 	/* dynamic values - should be locked */
 	gen_lock_t lock;
@@ -116,7 +118,7 @@ void ipsec_sa_rm_all(struct ipsec_socket *sock, struct ipsec_ctx *ctx);
 /* ctx */
 struct ipsec_ctx *ipsec_ctx_new(sec_agree_body_t *sa, struct ip_addr *ip,
 		struct socket_info *ss, struct socket_info *sc, str *ck, str *ik,
-		unsigned int spi_pc, unsigned int spi_ps);
+		unsigned int spi_pc, unsigned int spi_ps, enum ipsec_mode mode);
 struct ipsec_ctx *ipsec_ctx_find(struct ipsec_user *user, unsigned short port);
 void ipsec_ctx_push(struct ipsec_ctx *ctx);
 struct ipsec_ctx *ipsec_ctx_get(void);
