@@ -1506,6 +1506,45 @@ if ( get_dialog_vals($avp(d_names),$avp(d_vals),$var(callid)) ) {
 ```
 
 
+#### dlg_end_dlgs_by_val(name,value[,reason])
+
+
+The function looks up through the whole dialog table for dialogs containing a $dlg_val with the provided name and value, and terminates each of them by sending a BYE on both legs. It is the script counterpart of the *dlg_end_dlg* MI command, for cases where the set of calls to be torn down is only known from the script - for example every call of a subscriber whose registration has just been removed.
+
+
+Dialogs that are already being torn down are skipped. In a clustered setup, only the node owning the dialog's sharing tag sends the BYEs.
+
+
+> [!NOTE]
+> The function does not require to be called in the context of
+> a dialog - you can use it whenever / wherever for terminating other
+> dialogs.
+
+
+Meaning of the parameters is as follows:
+
+
+- *name (string)* - the name of the dialog variable used for the lookup
+- *value (var)* - the value of the above dialog val
+- *reason (string, optional)* - the termination reason recorded on the dialog and reported to the dialog callbacks. Default is *Script Termination*.
+
+
+The function returns the number of terminated dialogs, or -1 if none matched.
+
+
+This function can be used from any type of route.
+
+
+```opensips title="dlg_end_dlgs_by_val usage"
+...
+# the subscriber is gone, drop whatever they still have up
+$var(calls) = dlg_end_dlgs_by_val("impi", $var(impi), "Registration Terminated");
+if ($var(calls) > 0)
+	xlog("terminated $var(calls) calls of $var(impi)\n");
+...
+```
+
+
 #### get_dialogs_by_val(name,value,out_avp,out_dlg_no)
 
 

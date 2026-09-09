@@ -148,6 +148,8 @@ static int w_get_dlg_jsons_by_val(struct sip_msg *msg,
 		str *attr, pv_spec_t *attr_val, pv_spec_t *out, pv_spec_t *number_val);
 static int w_get_dlg_jsons_by_profile(struct sip_msg *msg,
 		str *attr, str *attr_val, pv_spec_t *out, pv_spec_t *number_val);
+static int w_dlg_end_dlgs_by_val(struct sip_msg *msg,
+		str *attr, pv_spec_t *attr_val, str *reason);
 static int w_get_dlg_vals(struct sip_msg *msg, pv_spec_t *v_name,
 		pv_spec_t *v_val, str *callid);
 static int w_tsl_dlg_flag(struct sip_msg *msg, void *_idx, int *_val);
@@ -265,6 +267,11 @@ static const cmd_export_t cmds[]={
 		{CMD_PARAM_STR|CMD_PARAM_OPT,0,0},
 		{CMD_PARAM_VAR,fixup_check_avp,0},
 		{CMD_PARAM_VAR,fixup_check_var,0}, {0,0,0}},
+		ALL_ROUTES},
+	{"dlg_end_dlgs_by_val",(cmd_function)w_dlg_end_dlgs_by_val, {
+		{CMD_PARAM_STR,0,0},
+		{CMD_PARAM_VAR,0,0},
+		{CMD_PARAM_STR|CMD_PARAM_OPT,0,0}, {0,0,0}},
 		ALL_ROUTES},
 	{"match_dialog",  (cmd_function)w_match_dialog, {
 		{CMD_PARAM_STR|CMD_PARAM_OPT,fixup_mmode,0}, {0,0,0}},
@@ -2590,6 +2597,95 @@ static int w_get_dlg_jsons_by_val(struct sip_msg *msg, str *attr, pv_spec_t *att
 
 	if (number_val->setf( msg, &number_val->pvp, 0, &val )!=0) {
 		LM_ERR("Failed to set dlg_no pvar to %d \n",n);
+		return -1;
+	}
+
+	return n;
+}
+
+/* Terminates every active dialog carrying the dialog value @attr equal to
+ * @attr_val, the script counterpart of the dlg_end_dlg MI command. */
+static int w_dlg_end_dlgs_by_val(struct sip_msg *msg, str *attr,
+		pv_spec_t *attr_val, str *reason)
+{
+	static str default_reason = str_init("Script Termination");
+	struct dialog_list *deleted = NULL, *delete_entry;
+	struct dlg_entry *d_entry;
+	struct dlg_cell *dlg;
+	unsigned int h;
+	int shtag_state;
+	int n = 0;
+
+	if (!reason)
+		reason = &default_reason;
+
+	/* collect the matches first: dlg_end_dlg() sends the BYEs through TM,
+	 * which must not happen under the dialog hash lock */
+	for (h = 0; h < d_table->size; h++) {
+
+		d_entry = &(d_table->entries[h]);
+		dlg_lock(d_table, d_entry);
+
+		for (dlg = d_entry->first; dlg; dlg = dlg->next) {
+			if (dlg->state > DLG_STATE_CONFIRMED)
+				continue;
+
+			if (check_dlg_value(msg, dlg, attr, attr_val, 1) != 0)
+				continue;
+
+			delete_entry = pkg_malloc(sizeof(struct dialog_list));
+			if (!delete_entry) {
+				dlg_unlock(d_table, d_entry);
+				LM_ERR("no more pkg memory\n");
+				/* tear down what we have rather than nothing at all */
+				goto terminate;
+			}
+			delete_entry->dlg = dlg;
+			delete_entry->next = deleted;
+			deleted = delete_entry;
+			ref_dlg_unsafe(dlg, 1);
+		}
+
+		dlg_unlock(d_table, d_entry);
+	}
+
+terminate:
+	delete_entry = deleted;
+	while (delete_entry) {
+		/* in a clustered setup only the node owning the sharing tag may
+		 * emit the BYEs, otherwise every node tears the dialog down */
+		if (dialog_repl_cluster) {
+			shtag_state = get_shtag_state(delete_entry->dlg);
+			if (shtag_state < 0) {
+				LM_ERR("error while checking replication tag for dlg %.*s\n",
+					delete_entry->dlg->callid.len,
+					delete_entry->dlg->callid.s);
+				goto next_dlg;
+			} else if (shtag_state == 0) {
+				goto next_dlg;
+			}
+		}
+
+		init_dlg_term_reason(delete_entry->dlg, reason->s, reason->len);
+
+		if (dlg_end_dlg(delete_entry->dlg, NULL, 1)) {
+			LM_ERR("error while terminating dlg %.*s\n",
+				delete_entry->dlg->callid.len,
+				delete_entry->dlg->callid.s);
+			/* best effort, keep going with the remaining dialogs */
+		} else {
+			n++;
+		}
+
+next_dlg:
+		unref_dlg(delete_entry->dlg, 1);
+		deleted = delete_entry;
+		delete_entry = delete_entry->next;
+		pkg_free(deleted);
+	}
+
+	if (n == 0) {
+		LM_DBG("no matched dialogs\n");
 		return -1;
 	}
 
