@@ -99,7 +99,7 @@ modparam("auth_aaa", "aaa_url", "diameter:freeDiameter.conf;extra-avps-file:/etc
 #### realm (string)
 
 
-The Realm used in the Origin Diameter commands.
+The realm placed in the Origin-Realm and Destination-Realm AVPs.
 
 
 Default value is "diameter.test".
@@ -108,6 +108,24 @@ Default value is "diameter.test".
 ```opensips title="realm parameter usage"
 		
 modparam("aka_av_diameter", "realm", "scscf.ims.mnc001.mcc001.3gppnetwork.org")
+		
+```
+
+
+#### origin_host (string)
+
+
+The FQDN of this node, placed in the Origin-Host AVP. RFC 6733 requires it
+to identify the sending peer, so it must match the `Identity` configured in
+`freeDiameter.conf` and resolve within the [realm](#realm-string).
+
+
+Default value is "scscf.diameter.test".
+
+
+```opensips title="origin_host parameter usage"
+		
+modparam("aka_av_diameter", "origin_host", "scscf.ims.mnc001.mcc001.3gppnetwork.org")
 		
 ```
 
