@@ -75,6 +75,10 @@
 #define REG_STR "reg"
 #define REG_STR_LEN 3
 
+/* RFC 4575: SIP event package for conference state */
+#define CONFERENCE_STR "conference"
+#define CONFERENCE_STR_LEN 10
+
 
 static inline char* skip_token(char* _b, int _l)
 {
@@ -150,6 +154,9 @@ int event_parser(char* _s, int _l, event_t* _e)
 	} else if ((_e->text.len == REG_STR_LEN) &&
 		   !strncasecmp(REG_STR, tmp.s, _e->text.len)) {
 		_e->parsed = EVENT_REG;
+	} else if ((_e->text.len == CONFERENCE_STR_LEN) &&
+		   !strncasecmp(CONFERENCE_STR, tmp.s, _e->text.len)) {
+		_e->parsed = EVENT_CONFERENCE;
 	} else {
 		_e->parsed = EVENT_OTHER;
 	}
