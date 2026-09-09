@@ -161,7 +161,7 @@ static int dlg_on_timeout(struct sip_msg* msg, void *route_id);
 static int dlg_on_answer(struct sip_msg* msg, void *route_id);
 static int dlg_on_hangup(struct sip_msg* msg, void *route_id);
 static int dlg_send_sequential(struct sip_msg* msg, str *method, int leg,
-		str *body, str *ct, str *headers);
+		str *body, str *ct, str *headers, void *reply_route);
 static int dlg_inc_cseq(struct sip_msg *msg, str *tag, int *_count);
 
 
@@ -293,7 +293,9 @@ static const cmd_export_t cmds[]={
 		{CMD_PARAM_STR, fixup_leg, 0},
 		{CMD_PARAM_STR|CMD_PARAM_OPT, 0, 0},
 		{CMD_PARAM_STR|CMD_PARAM_OPT, 0, 0},
-		{CMD_PARAM_STR|CMD_PARAM_OPT, 0, 0}, {0,0,0}},
+		{CMD_PARAM_STR|CMD_PARAM_OPT, 0, 0},
+		{CMD_PARAM_STR|CMD_PARAM_OPT, fixup_route, free_fixup_route},
+		{0,0,0}},
 		ALL_ROUTES},
 	{"dlg_inc_cseq", (cmd_function)dlg_inc_cseq, {
 		{CMD_PARAM_STR|CMD_PARAM_OPT, 0, 0},
@@ -2883,10 +2885,72 @@ static int dlg_on_hangup(struct sip_msg* msg, void *ref)
 }
 
 
+/* carried across the reply of a dlg_send_sequential() request that asked
+ * for a reply route */
+struct dlg_seq_reply_param {
+	struct dlg_cell *dlg;
+	struct script_route_ref *rt;
+};
+
+static int dlg_seq_reply_cb(struct sip_msg *reply, int statuscode, void *param)
+{
+	struct dlg_seq_reply_param *p = (struct dlg_seq_reply_param *)param;
+
+	/* provisional replies may show up here too, but the route is meant to
+	 * pick up where the request left off, so only the final one counts */
+	if (statuscode < 200)
+		return 0;
+
+	if (ref_script_route_check_and_update(p->rt))
+		run_dlg_reply_route(p->dlg, p->rt->idx, reply);
+	else
+		LM_ERR("reply route <%s> for sequential request is no longer "
+			"available\n", ref_script_route_name(p->rt));
+
+	return 0;
+}
+
+static void dlg_seq_reply_release(void *param)
+{
+	struct dlg_seq_reply_param *p = (struct dlg_seq_reply_param *)param;
+
+	shm_free(p->rt);
+	unref_dlg(p->dlg, 1);
+	shm_free(p);
+}
+
+static struct dlg_seq_reply_param *dlg_seq_reply_param_new(
+		struct dlg_cell *dlg, struct script_route_ref *rt)
+{
+	struct dlg_seq_reply_param *p = shm_malloc(sizeof *p);
+
+	if (!p) {
+		LM_ERR("oom for sequential reply route param\n");
+		return NULL;
+	}
+
+	/* the reply lands in a different process, so the route reference has
+	 * to live in shared memory */
+	p->rt = dup_ref_script_route_in_shm(rt, 0);
+	if (!ref_script_route_is_valid(p->rt)) {
+		LM_ERR("failed to duplicate reply route <%s> in shm\n",
+			ref_script_route_name(rt));
+		if (p->rt)
+			shm_free(p->rt);
+		shm_free(p);
+		return NULL;
+	}
+
+	p->dlg = dlg;
+	ref_dlg(dlg, 1);
+	return p;
+}
+
 static int dlg_send_sequential(struct sip_msg* msg, str *method, int leg,
-		str *body, str *ct, str *headers)
+		str *body, str *ct, str *headers, void *reply_route)
 {
 	struct dlg_cell *dlg = get_current_dialog();
+	struct dlg_seq_reply_param *p = NULL;
 	str invite = str_init("INVITE");
 	str prack = str_init("PRACK");
 	str req_headers = {0, 0};
@@ -2912,6 +2976,16 @@ static int dlg_send_sequential(struct sip_msg* msg, str *method, int leg,
 			return rc;
 	}
 
+	if (reply_route) {
+		p = dlg_seq_reply_param_new(dlg,
+				(struct script_route_ref *)reply_route);
+		if (!p) {
+			if (req_headers.s)
+				pkg_free(req_headers.s);
+			return -1;
+		}
+	}
+
 	if (is_prack && msg && msg->first_line.type == SIP_REPLY) {
 		if (leg != DLG_CALLER_LEG) {
 			rc = dlg_ensure_reply_leg(dlg, msg);
@@ -2920,12 +2994,19 @@ static int dlg_send_sequential(struct sip_msg* msg, str *method, int leg,
 		}
 		rc = send_prack_indialog_request(dlg, msg,
 				leg, body, ct,
-				(req_headers.s ? &req_headers : headers), NULL, NULL, NULL);
+				(req_headers.s ? &req_headers : headers),
+				p ? dlg_seq_reply_cb : NULL, p,
+				p ? dlg_seq_reply_release : NULL);
 	} else
 		rc = send_indialog_request(dlg, method,
 				(leg == DLG_CALLER_LEG ? leg : callee_idx(dlg)),
 				body, ct, (req_headers.s ? &req_headers : headers),
-				NULL, NULL, NULL);
+				p ? dlg_seq_reply_cb : NULL, p,
+				p ? dlg_seq_reply_release : NULL);
+
+	/* neither send function attaches the release on failure */
+	if (rc != 0 && p)
+		dlg_seq_reply_release(p);
 
 	if (req_headers.s)
 		pkg_free(req_headers.s);

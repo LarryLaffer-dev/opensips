@@ -2169,7 +2169,7 @@ route[dlg_hangup] {
 ```
 
 
-#### dlg_send_sequential(method, leg, [, body] [, content-type] [, headers])
+#### dlg_send_sequential(method, leg, [, body] [, content-type] [, headers] [, reply_route])
 
 
 Used to send an in-dialog request towards one if the dialog's legs.
@@ -2195,6 +2195,17 @@ every time you send a request with a body, otherwise there are high
 changes that your UAC will reject the request.
 - *headers (string, optional)* -
 additional headers attached to the request sent.
+- *reply_route (string, optional)* -
+the name of a route to be run when the final reply to this request
+arrives. Provisional replies do not trigger it.
+
+
+The reply route runs on the reply message, so the reply variables
+($rs, $rr, ...) are available, and in the context of the dialog, so
+[$dlg_val](#dlg_val) and *get_current_dialog()* work.
+If the request times out locally there is no reply to run on, and the
+route is executed on an empty request instead, leaving the reply
+variables unset. The route may send further in-dialog requests itself.
 
 
 This function can be used from ANY route.
@@ -2214,6 +2225,24 @@ event_route[E_RTPPROXY_DTMF] {
                 "application/dtmf-relay");
         unload_dialog_ctx();
     }
+}
+...
+```
+
+
+```opensips title="dlg_send_sequential usage with a reply route"
+...
+# offer the preconditions in an UPDATE and continue once it is answered
+dlg_send_sequential("UPDATE", "callee", $var(sdp),
+        "application/sdp", , "precond_answered");
+...
+route[precond_answered] {
+    if ($rs != 200) {
+        xlog("precondition UPDATE failed with $rs\n");
+        exit;
+    }
+    # $dlg_val and the dialog context are available here
+    $var(peer_sdp) = $rb;
 }
 ...
 ```

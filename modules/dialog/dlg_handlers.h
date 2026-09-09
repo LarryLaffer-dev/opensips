@@ -167,6 +167,8 @@ void unreference_dialog(void *dialog);
 
 int run_dlg_script_route(struct dlg_cell *dlg, int rt_idx);
 
+int run_dlg_reply_route(struct dlg_cell *dlg, int rt_idx, struct sip_msg *reply);
+
 
 static inline int parse_dlg_did(str *did, unsigned int *h_entry, unsigned int *h_id)
 {
