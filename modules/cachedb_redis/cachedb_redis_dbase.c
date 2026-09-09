@@ -2382,11 +2382,21 @@ int redis_map_get(cachedb_con *con, const str *key, cdb_res_t *res)
 
 			rc = redis_run_command(con, &get_reply, &s, "HGETALL %b",
 				s.s, (size_t)s.len);
-			if (rc != 0)
-				goto err_free_reply;
-
-			if (get_reply->elements == 0)
+			if (rc != 0) {
+				/* the key may have changed type or been removed between
+				 * the SCAN and the HGETALL (e.g. a foreign/orphaned key of
+				 * the wrong type); skip it rather than aborting the scan */
+				LM_DBG("skipping key %.*s: HGETALL failed (rc=%d)\n",
+					s.len, s.s, rc);
+				get_reply = NULL;
 				continue;
+			}
+
+			if (get_reply->elements == 0) {
+				freeReplyObject(get_reply);
+				get_reply = NULL;
+				continue;
+			}
 
 			cdb_row = pkg_malloc(sizeof *cdb_row);
 			if (!cdb_row) {
