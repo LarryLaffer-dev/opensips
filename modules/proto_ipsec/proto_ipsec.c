@@ -779,6 +779,23 @@ static int w_ipsec_create(struct sip_msg *msg, int *_port_ps, int *_port_pc,
 		if (ctx && ctx->state == IPSEC_STATE_OK) {
 			LM_DBG("found existing IPSec context %p for user %.*s, marked as temporary, to be deleted\n",
 				ctx, impi->len, impi->s);
+			/*
+			 * Kernel XFRM allows exactly one policy per (selector, dir).
+			 * The UE commonly reuses its port_s across a re-auth so the
+			 * new ctx's install collides with the old policy and silently
+			 * fails (NLM_F_EXCL).  Tear the old kernel SAs down now,
+			 * before ipsec_ctx_new()/ipsec_sa_add_all() runs for the new
+			 * ctx below.  The in-memory ctx still lives in the TMP list
+			 * so any pending transactions can finish; the TMP timer's
+			 * eventual cleanup is made a no-op by ctx->sa_removed.
+			 */
+			{
+				struct ipsec_socket *rm_sock = ipsec_sock_new();
+				if (rm_sock) {
+					ipsec_sa_rm_all(rm_sock, ctx);
+					ipsec_sock_close(rm_sock);
+				}
+			}
 			/* add the context as temporarily, so the "old" context gets removed on timer */
 			ipsec_ctx_add_tmp(ctx);
 		}
@@ -786,6 +803,35 @@ static int w_ipsec_create(struct sip_msg *msg, int *_port_ps, int *_port_pc,
 		prev_port_pc = 0;
 		/* message was received unprotected - remove all temporary SAs */
 		ipsec_ctx_release_tmp_user(user);
+		/*
+		 * Unprotected REGISTER means the UE is doing fresh authentication
+		 * (e.g. after airplane-mode toggle or loss of connectivity).  Any
+		 * previous OK context is now orphaned: the UE will never send
+		 * traffic on those selectors again and gets brand-new keys/ports
+		 * in the upcoming 200 OK flow.  If we leave them in place, their
+		 * kernel XFRM policies/states accumulate forever.  Tear down the
+		 * kernel SAs now and move the in-memory ctx onto the TMP list so
+		 * any in-flight transactions holding a ref can finish cleanly.
+		 */
+		{
+			struct list_head *it, *safe;
+			struct ipsec_ctx *old;
+			struct ipsec_socket *rm_sock = ipsec_sock_new();
+			lock_get(&user->lock);
+			list_for_each_safe(it, safe, &user->sas) {
+				old = list_entry(it, struct ipsec_ctx, list);
+				if (old->state != IPSEC_STATE_OK)
+					continue;
+				if (rm_sock)
+					ipsec_sa_rm_all(rm_sock, old);
+				/* +1 ref for the TMP list slot (see ipsec_ctx_attach) */
+				IPSEC_CTX_REF(old);
+				ipsec_ctx_add_tmp(old);
+			}
+			lock_release(&user->lock);
+			if (rm_sock)
+				ipsec_sock_close(rm_sock);
+		}
 	}
 
 	/* locate the received IP */
@@ -1431,24 +1477,20 @@ static void ipsec_usrloc_insert(ucontact_t *contact)
 static void ipsec_usrloc_update(ucontact_t *contact,
 		str *prev_host, unsigned short prev_port)
 {
-	struct ipsec_user *user;
-	struct ipsec_ctx *ctx;
-
-	LM_DBG("updating IPSec context for %.*s (%.*s)\n",
+	LM_DBG("updating IPSec context for %.*s (%.*s), prev_port=%hu\n",
 			contact->aor->len, contact->aor->s,
-			contact->c.len, contact->c.s);
-	user = ipsec_usrloc_get_user(contact);
-	if (!user) {
-		LM_ERR("could not find an IPSec user for this contact!\n");
-		return;
-	}
-	ctx = ipsec_ctx_find(user, prev_port);
-	if (ctx)
-		ipsec_ctx_release(ctx);
-	else
-		LM_ERR("could not find SA on port %hu\n", prev_port);
-	ipsec_release_user(user);
-	/* now overwrite the information with the new SA */
+			contact->c.len, contact->c.s, prev_port);
+
+	/*
+	 * Old-ctx tear-down is driven from the REGISTER path:
+	 *   - 401 re-auth: the old ctx is torn down immediately in
+	 *     w_ipsec_create() before the new ctx's SAs are installed.
+	 *   - Fresh (unprotected) re-REGISTER after e.g. airplane mode: any
+	 *     still-OK ctx for that user is torn down in the same function.
+	 * For a plain refresh re-REGISTER no new ipsec_ctx is attached to the
+	 * transaction and the existing SA must stay in place - just refresh
+	 * the ucontact keys.
+	 */
 	ipsec_usrloc_insert(contact);
 }
 

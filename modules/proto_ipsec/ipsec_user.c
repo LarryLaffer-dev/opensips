@@ -454,8 +454,9 @@ struct ipsec_ctx *ipsec_get_ctx_user_port(struct ipsec_user *user, unsigned shor
 	lock_get(&user->lock);
 	list_for_each(it, &user->sas) {
 		ctx = list_entry(it, struct ipsec_ctx, list);
-		LM_DBG("checking ctx %p for port %u\n", ctx, port);
-		if (ctx->ue.port_s == port || ctx->ue.port_c) {
+		LM_DBG("checking ctx %p for port %u (ue.port_s=%u ue.port_c=%u state=%d)\n",
+				ctx, port, ctx->ue.port_s, ctx->ue.port_c, ctx->state);
+		if (ctx->ue.port_s == port || ctx->ue.port_c == port) {
 			if (ctx->state == IPSEC_STATE_TMP) {
 				tmp_ctx = ctx;
 			}
@@ -467,7 +468,7 @@ struct ipsec_ctx *ipsec_get_ctx_user_port(struct ipsec_user *user, unsigned shor
 	lock_release(&user->lock);
 	if (!ctx && tmp_ctx) {
 		/* Just found a temporary context, not an "OK" context, return temporary context */
-		return tmp_ctx;
+		ctx = tmp_ctx;
 	}
 	return ctx;
 }
