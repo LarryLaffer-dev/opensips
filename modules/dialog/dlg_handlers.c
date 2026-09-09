@@ -706,6 +706,28 @@ static inline void push_reply_in_dialog(struct sip_msg *req, struct sip_msg *rpl
 	}
 
 routing_info:
+	/* An early dialog is created by the first reliable provisional, and the
+	 * proxy may have to build in-dialog requests toward the callee before
+	 * the 2xx - PRACK, or the UPDATE of the RFC 3312 precondition handshake.
+	 * That needs the callee route-set, which so far was only captured from
+	 * the 2xx. Take it from the first to-tagged provisional instead.
+	 *
+	 * The RR skip has to match what the 2xx path below does, so that the
+	 * route-set only holds the hops from here toward the callee. With
+	 * skip_rrs 0 it would keep the full end-to-end set and our own requests
+	 * would travel back through the proxies in front of us. The branch is
+	 * the one being processed, since relaied_reply_branch is only set once
+	 * a reply has actually been relayed. */
+	if (rpl->REPLY_STATUS>100 && rpl->REPLY_STATUS<200 && tag.len &&
+	!(dlg->mod_flags & TOPOH_ONGOING) && !dlg->legs[leg].contact.s) {
+		skip_rrs = dlg->from_rr_nb +
+				TM_BRANCH(t, d_tmb.get_branch_index()).added_rr;
+		get_routing_info(rpl, 0, &skip_rrs, &contact, &rr_set);
+		dlg_update_routing(dlg, leg, &rr_set, &contact);
+		if (rr_set.s)
+			pkg_free(rr_set.s);
+	}
+
 	/* update dlg info only if 2xx reply and if not already done so */
 	if (rpl->REPLY_STATUS>=200 && rpl->REPLY_STATUS<300 &&
 	dlg->legs_no[DLG_LEG_200OK] != leg) {
