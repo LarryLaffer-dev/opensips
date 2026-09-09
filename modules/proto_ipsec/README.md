@@ -183,6 +183,55 @@ param("proto_ipsec", "temporary_timeout", 10) # number of seconds
 ```
 
 
+#### reconcile_interval (integer)
+
+
+How often, in seconds, to scan the kernel XFRM database for orphaned
+security associations and delete them.
+
+An orphan is an SA installed by this module -- recognised by its SPI
+range and selector -- for which no `ipsec_ctx` exists any more. They
+accumulate when OpenSIPS is killed rather than shut down cleanly, or
+when a UE disappears mid-handshake. Because kernel SAs outlive the
+process, and because the kernel permits only one policy per selector,
+leftovers block the next registration attempt from the same UE.
+
+Set to 0 to disable the reaper entirely.
+
+
+*Default value is 30.*
+
+
+```opensips title="Set reconcile_interval parameter"
+...
+modparam("proto_ipsec", "reconcile_interval", 60)
+...
+```
+
+
+#### reconcile_grace (integer)
+
+
+Minimum age, in seconds, an SA must reach before the reaper is allowed
+to consider it orphaned.
+
+The grace period exists because there is a window during registration
+in which the kernel SA already exists but the `ipsec_ctx` is not yet
+linked. Without it, the reaper could delete an association that is
+still being set up. Raise this value if you see freshly created SAs
+being removed on a heavily loaded system.
+
+
+*Default value is 30.*
+
+
+```opensips title="Set reconcile_grace parameter"
+...
+modparam("proto_ipsec", "reconcile_grace", 120)
+...
+```
+
+
 #### default_client_port (integer)
 
 

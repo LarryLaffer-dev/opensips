@@ -487,7 +487,7 @@ struct ipsec_ctx *ipsec_get_ctx_ip_port(struct ip_addr *ip, unsigned short port)
 		map = ipsec_map_ipv6;
 	lock_get(&map->lock);
 	node = ipsec_find_node(ip, 0, map->nodes, map->size);
-	if (node) {
+	if (node && node->users) {
 		list_for_each(it, node->users) {
 			uimpi = list_entry(it, struct ipsec_user_impi, list);
 			list_for_each(uit, &uimpi->users) {
@@ -505,4 +505,13 @@ end:
 	}
 	lock_release(&map->lock);
 	return ctx;
+}
+
+int ipsec_users_claim_port(struct ip_addr *ip, unsigned short port)
+{
+	struct ipsec_ctx *ctx = ipsec_get_ctx_ip_port(ip, port);
+	if (!ctx)
+		return 0;
+	IPSEC_CTX_UNREF(ctx);
+	return 1;
 }

@@ -24,7 +24,6 @@
 #include <netinet/tcp.h>
 #include <poll.h>
 #include <fcntl.h>
-
 #include "../../pt.h"
 #include "../../timer.h"
 #include "../../socket_info.h"
@@ -100,6 +99,8 @@ static const param_export_t params[] = {
 	{ "max_spi",						INT_PARAM, &ipsec_max_spi },
 	/* TODO: this should be reg-await-auth timer */
 	{ "temporary_timeout",				INT_PARAM, &ipsec_tmp_timeout },
+	{ "reconcile_interval",				INT_PARAM, &ipsec_reconcile_interval },
+	{ "reconcile_grace",				INT_PARAM, &ipsec_reconcile_grace },
 	{ "default_client_port",			INT_PARAM, &ipsec_default_client_port },
 	{ "default_server_port",			INT_PARAM, &ipsec_default_server_port },
 	{ "allowed_algorithms",				STR_PARAM, &ipsec_allowed_algorithms.s },
