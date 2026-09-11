@@ -31,10 +31,12 @@ extern str media_default_instance;
 extern str content_type_sdp;
 extern str content_type_sdp_hdr;
 extern str media_hold_sdp_direction;
+extern str media_exchange_sdp_direction;
 
 struct media_fork_info;
 
 str *media_session_get_hold_sdp(struct media_session_leg *msl);
+str *media_sdp_set_direction(str *body, str *direction);
 
 str *media_get_dlg_headers(struct dlg_cell *dlg, int dleg, int ct);
 

@@ -155,6 +155,35 @@ modparam("media_exchange", "hold_media_direction", "recvonly")
 	</programlisting>
 			</example>
 		</section>
+		<section id="param_exchange_media_direction" xreflabel="exchange_media_direction">
+			<title><varname>exchange_media_direction</varname> (string)</title>
+			<para>
+				SDP direction forced into the media-server SDP that a media
+				exchange offers to the participant opposite to the one that
+				triggered it (for example the held party during Music-on-Hold).
+				Accepted values are <emphasis>inactive</emphasis>,
+				<emphasis>recvonly</emphasis>, <emphasis>sendonly</emphasis>
+				and <emphasis>sendrecv</emphasis>.
+			</para>
+			<para>
+				When unset (the default), the media-server SDP is relayed
+				verbatim, preserving the historical behaviour. Setting
+				<emphasis>sendonly</emphasis> lets the held party identify the
+				call as being on hold (3GPP TS 24.610) while still receiving
+				the announcement media.
+			</para>
+			<para>
+				<emphasis>Default value is unset (no rewrite).</emphasis>
+			</para>
+			<example>
+				<title>Set <varname>exchange_media_direction</varname> parameter</title>
+				<programlisting format="linespecific">
+...
+modparam("media_exchange", "exchange_media_direction", "sendonly")
+...
+	</programlisting>
+			</example>
+		</section>
 	</section>
 
 	<section id="exported_functions" xreflabel="exported_functions">

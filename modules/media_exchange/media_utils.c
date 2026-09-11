@@ -28,6 +28,14 @@ str content_type_sdp_hdr = str_init("Content-Type: application/sdp\r\n");
  * "hold_media_direction" modparam. Always an 8-char direction token so the
  * hold-SDP builder below stays length-safe. */
 str media_hold_sdp_direction = str_init("inactive");
+/* SDP direction written into the media-server SDP that a media exchange
+ * offers to the participant opposite to the one that triggered it (the held
+ * party during Music-on-Hold). Configured via the "exchange_media_direction"
+ * modparam; empty (the default) leaves the media-server SDP untouched.
+ * "sendonly" lets the held party identify the call as being on hold
+ * (TS 24.610 4.5.2) while still receiving the announcement media. Always an
+ * 8-char direction token so the rewrite below stays length-safe. */
+str media_exchange_sdp_direction = {NULL, 0};
 
 str *media_session_get_hold_sdp(struct media_session_leg *msl)
 {
@@ -109,6 +117,85 @@ str *media_session_get_hold_sdp(struct media_session_leg *msl)
 			}
 		}
 	}
+
+	return &new_body;
+}
+
+/* Returns a copy of "body" with the direction attribute of every media
+ * stream rewritten to "direction" (added where missing). Media-level
+ * attributes override session-level ones (RFC 4566), so a per-stream
+ * rewrite is authoritative for the receiver. The copy is length-safe
+ * because every SDP direction token is 8 characters long. Returns a
+ * static str whose .s is pkg-allocated (caller frees), or NULL on error. */
+str *media_sdp_set_direction(str *body, str *direction)
+{
+	sdp_info_t sdp;
+	sdp_session_cell_t *session;
+	sdp_stream_cell_t *stream;
+	str session_hdr;
+	int attr_to_add = 0;
+	int len, streamnum;
+	static str new_body;
+
+	memset(&sdp, 0, sizeof(sdp));
+	if (parse_sdp_session(body, 0, NULL, &sdp) < 0) {
+		LM_ERR("could not parse SDP to set its direction\n");
+		return NULL;
+	}
+
+	/* we only have one session, so there's no need to iterate */
+	session = sdp.sessions;
+	session_hdr.s = session->body.s;
+	session_hdr.len = session->body.len;
+	for (stream = session->streams; stream; stream = stream->next) {
+		/* first stream indicates where session header ends */
+		if (session_hdr.len > stream->body.s - session->body.s)
+			session_hdr.len = stream->body.s - session->body.s;
+		if (stream->sendrecv_mode.len == 0)
+			attr_to_add++;
+	}
+
+	new_body.s = pkg_malloc(body->len + attr_to_add * 12 /* a=sendonly\r\n */);
+	if (!new_body.s) {
+		LM_ERR("oom for new body!\n");
+		free_sdp_content(&sdp);
+		return NULL;
+	}
+
+	/* copy everything until the first stream */
+	memcpy(new_body.s, session_hdr.s, session_hdr.len);
+	new_body.len = session_hdr.len;
+	for (streamnum = 0; streamnum < session->streams_num; streamnum++) {
+		for (stream = session->streams; stream; stream = stream->next) {
+			/* make sure the streams are in the same order */
+			if (stream->stream_num != streamnum)
+				continue;
+			if (stream->sendrecv_mode.len) {
+				/* replace the existing direction attribute (length-neutral:
+				 * both tokens are 8 chars) */
+				len = stream->sendrecv_mode.s - stream->body.s;
+				memcpy(new_body.s + new_body.len, stream->body.s, len);
+				new_body.len += len;
+				memcpy(new_body.s + new_body.len, direction->s, direction->len);
+				new_body.len += direction->len;
+				len += stream->sendrecv_mode.len;
+				memcpy(new_body.s + new_body.len, stream->body.s + len,
+						stream->body.len - len);
+				new_body.len += stream->body.len - len;
+			} else {
+				/* no direction attribute: append one at the stream's end */
+				memcpy(new_body.s + new_body.len, stream->body.s, stream->body.len);
+				new_body.len += stream->body.len;
+				memcpy(new_body.s + new_body.len, "a=", 2);
+				new_body.len += 2;
+				memcpy(new_body.s + new_body.len, direction->s, direction->len);
+				new_body.len += direction->len;
+				memcpy(new_body.s + new_body.len, "\r\n", 2);
+				new_body.len += 2;
+			}
+		}
+	}
+	free_sdp_content(&sdp);
 
 	return &new_body;
 }

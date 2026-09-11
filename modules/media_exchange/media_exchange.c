@@ -41,6 +41,14 @@ str media_default_instance = str_init(MEDIA_DEFAULT_INSTANCE);
  * relies on every direction attribute having the same length as "inactive". */
 static char *media_hold_direction_param = NULL;
 
+/* SDP direction forced into the media-server SDP offered to the participant
+ * opposite to the one that triggered the exchange (the held party during
+ * Music-on-Hold). Unset (the default) relays the media-server SDP verbatim,
+ * preserving the upstream behaviour; "sendonly" lets the held party identify
+ * the call as being on hold (TS 24.610 4.5.2) while still receiving the
+ * announcement media. Must be one of the 8-char SDP direction tokens. */
+static char *media_exchange_direction_param = NULL;
+
 static int mod_preinit(void);
 static int mod_init(void);
 static int media_fork_to_uri(struct sip_msg *msg, str *uri,
@@ -143,6 +151,7 @@ static const cmd_export_t cmds[] = {
 /* exported parameters */
 static const param_export_t params[] = {
 	{"hold_media_direction", STR_PARAM, &media_hold_direction_param},
+	{"exchange_media_direction", STR_PARAM, &media_exchange_direction_param},
 	{0, 0, 0}
 };
 
@@ -274,6 +283,26 @@ static int mod_init(void)
 					"inactive/recvonly/sendonly/sendrecv); keeping '%.*s'\n",
 					media_hold_direction_param,
 					media_hold_sdp_direction.len, media_hold_sdp_direction.s);
+		}
+	}
+
+	/* validate the configurable exchange direction the same way; an empty or
+	 * missing value keeps the upstream pass-through behaviour */
+	if (media_exchange_direction_param && *media_exchange_direction_param) {
+		if (strlen(media_exchange_direction_param) == 8 &&
+				(strcasecmp(media_exchange_direction_param, "inactive") == 0 ||
+				 strcasecmp(media_exchange_direction_param, "recvonly") == 0 ||
+				 strcasecmp(media_exchange_direction_param, "sendonly") == 0 ||
+				 strcasecmp(media_exchange_direction_param, "sendrecv") == 0)) {
+			media_exchange_sdp_direction.s = media_exchange_direction_param;
+			media_exchange_sdp_direction.len = strlen(media_exchange_direction_param);
+			LM_INFO("exchange media direction set to '%.*s'\n",
+					media_exchange_sdp_direction.len, media_exchange_sdp_direction.s);
+		} else {
+			LM_WARN("invalid exchange_media_direction '%s' (expected one of "
+					"inactive/recvonly/sendonly/sendrecv); relaying the "
+					"media-server SDP unchanged\n",
+					media_exchange_direction_param);
 		}
 	}
 
@@ -1340,6 +1369,7 @@ static int handle_media_session_reply_exchange(struct media_session_leg *msl,
 {
 	int ret, release = 0;
 	str sbody;
+	str *mbody;
 	struct dlg_cell *dlg;
 
 	dlg = msl->ms->dlg;
@@ -1393,6 +1423,25 @@ static int handle_media_session_reply_exchange(struct media_session_leg *msl,
 	} else {
 		/* we have a differet leg, so we need to request in the oposite
 		 * direction */
+		/* the media-server SDP is offered to the participant opposite to the
+		 * one that triggered the exchange (e.g. the held party during
+		 * Music-on-Hold); when exchange_media_direction is set, mark that
+		 * offer with the configured direction so its receiver can identify
+		 * the session state (hold indication, TS 24.610 4.5.2) */
+		if (media_exchange_sdp_direction.len) {
+			mbody = media_sdp_set_direction(body, &media_exchange_sdp_direction);
+			if (mbody) {
+				if (release)
+					pkg_free(body->s);
+				body = mbody;
+				release = 1;
+			} else {
+				LM_WARN("could not set SDP direction '%.*s'; relaying the "
+						"media-server SDP unchanged\n",
+						media_exchange_sdp_direction.len,
+						media_exchange_sdp_direction.s);
+			}
+		}
 		ret = media_session_reinvite(msl, other_leg(dlg, p->leg), body);
 		if (release)
 			pkg_free(body->s);
