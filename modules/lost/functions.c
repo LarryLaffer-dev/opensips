@@ -1156,6 +1156,10 @@ int lost_query_finish(struct sip_msg *_m, lost_ctx_t *ctx, int _code)
 	redirect = 1;
 	while(redirect) {
 		fsrdata = lost_parse_findServiceResponse(ret);
+		if(fsrdata == NULL) {
+			LM_ERR("findService response parsing failed\n");
+			goto err;
+		}
 		if(lost_verbose == 1) {
 			lost_print_findServiceResponse(fsrdata);
 		}
